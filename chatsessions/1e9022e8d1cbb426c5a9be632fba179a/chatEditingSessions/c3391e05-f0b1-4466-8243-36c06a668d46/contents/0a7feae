@@ -1,9 +1,0 @@
-import { createService } from './app.js';
-
-const service=await createService();
-const server=service.app.listen(service.config.port,service.config.host);
-server.on('listening',()=>console.log(`TerrainServer ready at http://${service.config.host}:${service.config.port}\nStorage: ${service.config.storageRoot}\nAPI documentation: http://${service.config.host}:${service.config.port}/docs`));
-server.on('error',async error=>{console.error(error.code==='EADDRINUSE'?`Port ${service.config.port} is occupied. Free that port or change PORT in .env.`:error.message);await service.close();process.exitCode=1;});
-let shuttingDown=false;
-async function shutdown(){if(shuttingDown)return;shuttingDown=true;server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await service.close();}
-process.once('SIGINT',shutdown);process.once('SIGTERM',shutdown);
