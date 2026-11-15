@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { normalizeBoundary, parseBbox, selectAssets, metricCrs } from '../src/spatial.js';
+
+test('accepts Scorecarder bbox objects and rejects invalid boundaries', () => {
+  assert.deepEqual(parseBbox({ minLng: -79.5, minLat: 43.5, maxLng: -79.4, maxLat: 43.6 }), [-79.5, 43.5, -79.4, 43.6]);
+  assert.deepEqual(parseBbox({ minX: -79.5, minY: 43.5, maxX: -79.4, maxY: 43.6 }), [-79.5, 43.5, -79.4, 43.6]);
+  assert.throws(() => parseBbox('170,-10,-170,10'), /antimeridian/);
+  assert.throws(() => parseBbox('0,0,0,1'), /Invalid bbox/);
+  assert.throws(() => normalizeBoundary({ boundary: { type: 'Point', coordinates: [0, 0] } }), /Polygon/);
+  assert.throws(() => normalizeBoundary({ bbox: [0, 0, 1, 1], bufferMeters: -1 }), /bufferMeters/);
+});
+
+test('polygon selection excludes tiles inside a boundary hole', () => {
+  const query = normalizeBoundary({ boundary: { type: 'Polygon', coordinates: [
+    [[0, 0], [3, 0], [3, 3], [0, 3], [0, 0]],
+    [[1, 1], [1, 2], [2, 2], [2, 1], [1, 1]]
+  ] } });
+  const assets = [
+    { id: 'outside', bbox: [4, 4, 5, 5] },
+    { id: 'hole', bbox: [1.2, 1.2, 1.8, 1.8] },
+    { id: 'hit', bbox: [0.2, 0.2, 0.8, 0.8] }
+  ];
+  assert.deepEqual(selectAssets(assets, query).map((asset) => asset.id), ['hit']);
+});
+
+test('best and all preserve source-native precision and unknown point-cloud density', () => {
+  const query = normalizeBoundary({ bbox: [-80, 43, -79, 44] });
+  const common = { bbox: [-79.8, 43.2, -79.2, 43.8], sourceId: 'ontario', product: 'dtm' };
+  const assets = [
+    { ...common, id: 'fine', resolutionMeters: 0.5 },
+    { ...common, id: 'coarse', resolutionMeters: 1 },
+    { ...common, id: 'cloud', product: 'point-cloud', resolutionMeters: null },
+    { ...common, id: 'other', sourceId: 'nrcan', resolutionMeters: 2 }
+  ];
+  assert.deepEqual(selectAssets(assets, query, { resolution: 'best' }).map((asset) => asset.id), ['fine', 'cloud', 'other']);
+  assert.equal(selectAssets(assets, query, { resolution: 'all' }).length, 4);
+  assert.deepEqual(selectAssets(assets, query, { resolution: 0.5 }).map((asset) => asset.id), ['fine']);
+  assert.throws(() => selectAssets(assets, query, { resolution: 'invalid' }), /resolution/);
+});
+
+test('meter buffers expand boundaries and processing uses local metric projections', () => {
+  const original = [-79.5, 43.5, -79.4, 43.6];
+  const query = normalizeBoundary({ bbox: original, bufferMeters: 500 });
+  assert.ok(query.bbox[0] < original[0] && query.bbox[3] > original[3]);
+  assert.ok(query.areaKm2 > 0);
+  assert.equal(metricCrs(original), 'EPSG:32617');
+  assert.equal(metricCrs([-65, 45, -62, 47]), 'EPSG:32620');
+});
+
+test('best resolution retains coarser gap-fill tiles where finer surveys have no coverage', () => {
+  const query = normalizeBoundary({ bbox: [-80,43,-78,44] });
+  const common = { sourceId: 'nrcan', product: 'dtm' };
+  const assets = [
+    { ...common, id: 'fine', bbox: [-80,43,-79,44], resolutionMeters: 0.5 },
+    { ...common, id: 'covered-coarse', bbox: [-80,43,-79,44], resolutionMeters: 2 },
+    { ...common, id: 'gap-fill', bbox: [-79,43,-78,44], resolutionMeters: 2 }
+  ];
+  assert.deepEqual(selectAssets(assets, query, { resolution: 'best' }).map((asset) => asset.id), ['fine','gap-fill']);
+});

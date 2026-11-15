@@ -1,0 +1,137 @@
+import path from 'node:path';
+import { mkdir, stat, writeFile, readdir, rm, statfs, realpath } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import unzipper from 'unzipper';
+import shp from 'shpjs';
+import { bbox } from '@turf/turf';
+import { load } from 'cheerio';
+import { isContained, safeSegment } from './config.js';
+import { HttpError, intersectsBoundary } from './spatial.js';
+import { publishFile } from './network.js';
+
+export function attributeLinks(attributes, fields = []) {
+  const links = [];
+  const entries = fields.length ? fields.map((key) => [key, attributes[key]]) : Object.entries(attributes || {});
+  for (const [key, value] of entries) {
+    if (typeof value !== 'string') continue;
+    if (/^https?:\/\//i.test(value.trim())) links.push({ key, url: value.trim() });
+    if (value.includes('<')) {
+      const document = load(value);
+      document('a[href]').each((index, element) => {
+        const href = document(element).attr('href');
+        if (/^https?:\/\//i.test(href)) links.push({ key, url: href });
+      });
+    }
+  }
+  return [...new Map(links.map((link) => [link.url, link])).values()];
+}
+
+export function extensionFor(url, mediaType = '') {
+  const pathname = new URL(url).pathname;
+  const matched = /\.(copc\.laz|laz|las|zlas|tiff?|zip|geojson|gpkg|img|jp2|png|jpe?g)(?:$)/i.exec(pathname);
+  if (matched) return matched[1].toLowerCase();
+  if (/tiff/i.test(mediaType)) return 'tif';
+  if (/geo\+json|geojson/i.test(mediaType)) return 'geojson';
+  if (/zip/i.test(mediaType)) return 'zip';
+  return null;
+}
+
+export function canonicalDownloadUrl(input) {
+  const url = new URL(input);
+  if (url.hostname === 'download-telecharger.services.geo.ca' && url.pathname.startsWith('/pub/')) url.hostname = 'ftp.maps.canada.ca';
+  return url.href;
+}
+
+export function geojsonFeatures(document) {
+  if (document.type === 'Feature') return [document];
+  if (document.type === 'FeatureCollection') return document.features || [];
+  if (['Polygon','MultiPolygon'].includes(document.type)) return [{ type: 'Feature', properties: {}, geometry: document }];
+  throw new HttpError(502, 'Spatial index must contain GeoJSON features or polygon geometry.');
+}
+
+export function attributeResolution(attributes) {
+  const preferred = ['resolutionMeters', 'cellSizeMeters', 'Resolution', 'resolution', 'spacing', 'GSD', 'gsd', 'CellSize', 'RESOLUTION'];
+  for (const key of preferred) {
+    const value = attributes?.[key];
+    if (value == null || value === '') continue;
+    const match = /^\s*(\d+(?:\.\d+)?)\s*(?:m|metre|meter|metres|meters)?\s*$/i.exec(String(value));
+    if (match && Number(match[1]) > 0) return Number(match[1]);
+  }
+  return null;
+}
+
+export async function extractArchive(filename, destination, maxBytes = 1024 ** 3 * 1024, options = {}) {
+  options.signal?.throwIfAborted();
+  const archive = await unzipper.Open.file(filename);
+  const total = archive.files.reduce((sum, entry) => sum + Number(entry.uncompressedSize || 0), 0);
+  if (total > maxBytes || archive.files.length > 100000) throw new HttpError(413, 'Archive exceeds extraction limits. Adjust MAX_ARCHIVE_UNCOMPRESSED_GB or retain it as a raw archive.');
+  await mkdir(destination, { recursive: true });
+  const root = await realpath(destination);
+  const files = [];
+  for (const entry of archive.files) {
+    options.signal?.throwIfAborted();
+    const relative = entry.path.replaceAll('\\', '/');
+    if (/^[a-zA-Z]:|^\//.test(relative) || relative.split('/').includes('..')) throw new HttpError(400, 'Unsafe path in provider archive.');
+    const target = path.resolve(destination, relative);
+    if (!isContained(destination, target)) throw new HttpError(400, 'Unsafe archive path.');
+    if (entry.type === 'Directory') { await mkdir(target, { recursive: true }); continue; }
+    await mkdir(path.dirname(target), { recursive: true });
+    if (!isContained(root, await realpath(path.dirname(target)))) throw new HttpError(400, 'Archive path escapes its root through a symbolic link.');
+    const existing = await stat(target).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+    if (!existing) {
+      const disk = await statfs(destination);
+      if (Number(disk.bavail) * Number(disk.bsize) < Number(entry.uncompressedSize) + (options.reserveBytes || 0)) throw new HttpError(507, 'Insufficient free space to extract this archive member while retaining the disk reserve.');
+      const temporary = `${target}.terrain-${randomUUID()}.part`;
+      try {
+        await pipeline(entry.stream(), createWriteStream(temporary, { flags: 'wx' }), { signal: options.signal });
+        if ((await stat(temporary)).size !== Number(entry.uncompressedSize)) throw new HttpError(502, 'Archive member size did not match the provider archive.');
+        await publishFile(temporary, target);
+      } finally { await rm(temporary, { force: true }); }
+    }
+    else if (existing.size !== Number(entry.uncompressedSize)) throw new HttpError(409, 'Existing archive member has an unexpected size; raw data was not overwritten.');
+    files.push(target);
+  }
+  return files;
+}
+
+export class VectorIndexes {
+  constructor(config, network, gis) { this.config = config; this.network = network; this.gis = gis; }
+
+  async query(sourceId, descriptor, query, options = {}) {
+    const url = descriptor.indexUrl;
+    this.network.validateUrl(url);
+    let revision = '';
+    const response = await this.network.response(url, { method: 'HEAD', signal: options.signal });
+    if (response.ok) revision = response.headers.get('etag') || response.headers.get('last-modified') || '';
+    await response.body?.cancel();
+    const key = createHash('sha256').update(url + revision).digest('hex').slice(0, 20);
+    const root = path.join(this.config.storageRoot, '.indexes', safeSegment(sourceId), key);
+    const filename = path.join(root, path.basename(new URL(url).pathname));
+    const extension = extensionFor(url) || 'zip';
+    options.onProgress?.(`Caching ${sourceId} spatial index`);
+    await this.network.download(url, filename, { signal: options.signal, extension: ['zip','geojson'].includes(extension) ? extension : undefined });
+    let files = [filename];
+    if (extension === 'zip') files = await extractArchive(filename, path.join(root, 'extracted'), 5 * 1024 ** 3,
+      { signal: options.signal, reserveBytes: (this.config.minFreeDiskGb || 0) * 1024 ** 3 });
+    const vector = files.find((file) => descriptor.indexFile ? path.basename(file).toLowerCase() === descriptor.indexFile.toLowerCase()
+      : /\.(shp|gpkg|geojson)$/i.test(file));
+    if (!vector) throw new HttpError(502, 'Provider archive does not contain the configured vector index.');
+    let features;
+    if (/\.geojson$/i.test(vector)) {
+      const { readFile } = await import('node:fs/promises');
+      features = geojsonFeatures(JSON.parse(await readFile(vector, 'utf8')));
+    } else {
+      try {
+        const output = await this.gis.run('ogr2ogr', ['-f', 'GeoJSON', '/vsistdout/', vector, '-spat_srs', 'EPSG:4326', '-spat', ...query.bbox.map(String), '-t_srs', 'EPSG:4326'], { signal: options.signal });
+        features = JSON.parse(output.stdout).features;
+      } catch (error) {
+        if (!/\.shp$/i.test(vector) || error.status !== 503) throw error;
+        const parsed = await shp(vector.replace(/\.shp$/i, ''));
+        features = (Array.isArray(parsed) ? parsed.flatMap((collection) => collection.features) : parsed.features);
+      }
+    }
+    return (features || []).filter((item) => item.geometry && (options.fullGeometry || intersectsBoundary({ geometry: item.geometry }, query)));
+  }
+}

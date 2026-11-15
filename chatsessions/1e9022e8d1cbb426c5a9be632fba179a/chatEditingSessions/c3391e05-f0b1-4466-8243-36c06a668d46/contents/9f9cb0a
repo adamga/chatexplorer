@@ -1,0 +1,169 @@
+import path from 'node:path';
+import { mkdir,writeFile,readdir,stat,statfs,readFile } from 'node:fs/promises';
+import { randomBytes,randomUUID,timingSafeEqual } from 'node:crypto';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import { z } from 'zod';
+import { feature as topoFeature } from 'topojson-client';
+import { bboxPolygon } from '@turf/turf';
+import { loadConfig,persistStorageRoot,projectRoot,courseDirectory } from './config.js';
+import { Catalog } from './catalog.js';
+import { Network } from './network.js';
+import { Gis } from './gis.js';
+import { VectorIndexes } from './indexes.js';
+import { SourceRegistry } from './sources.js';
+import { TerrainProcessor } from './processing.js';
+import { JobManager } from './jobs.js';
+import { TerrainReader } from './terrain.js';
+import { HttpError,normalizeBoundary,parseBbox,assetsGeojson } from './spatial.js';
+import { openapi } from './openapi.js';
+
+const list=value=>Array.isArray(value)?value:typeof value==='string'?value.split(',').map(item=>item.trim()).filter(Boolean):undefined;
+const bodySchema=z.object({sourceIds:z.array(z.string()).max(32).optional(),products:z.array(z.string()).max(30).optional(),formats:z.array(z.string()).max(30).optional(),collectionIds:z.array(z.string()).max(100).optional(),
+  resolution:z.union([z.enum(['best','all','native']),z.number().positive()]).optional(),bufferMeters:z.number().min(0).max(10000).optional(),scope:z.enum(['area','source']).optional(),
+  storageRoot:z.string().refine(value=>path.isAbsolute(value)&&!/[\r\n\0]/.test(value),'Use an absolute storage path').optional(),assetIds:z.array(z.string()).max(100000).optional(),
+  courseId:z.string().optional(),planId:z.string().optional(),allowPartial:z.boolean().optional(),processAfterDownload:z.boolean().optional(),resolutionMeters:z.number().positive().optional(),
+  contourIntervals:z.array(z.number().positive()).min(1).max(20).optional(),resampling:z.enum(['near','bilinear','cubic','cubicspline','lanczos','average','mode']).optional(),
+  groundOnly:z.boolean().optional(),preferPointCloud:z.boolean().optional(),zScale:z.number().positive().optional(),hillshadeStyle:z.enum(['classic','multidirectional']).optional(),slopeUnits:z.enum(['degrees','percent']).optional()}).passthrough();
+
+export async function createService(overrides={}) {
+  const config=loadConfig(overrides);await mkdir(config.storageRoot,{recursive:true});
+  const catalog=new Catalog(config.catalogPath);catalog.registerRoot(config.storageRoot);
+  const network=new Network(config);const gis=new Gis(config);const indexes=new VectorIndexes(config,network,gis);const registry=new SourceRegistry(config,catalog,network,indexes);
+  const processor=new TerrainProcessor(config,catalog,gis);const jobs=new JobManager(config,catalog,network,registry,processor);const reader=new TerrainReader(catalog,gis);
+  const app=express();const tickets=new Map();
+  app.disable('x-powered-by');
+  app.use(helmet({contentSecurityPolicy:{directives:{'default-src':["'self'"],'script-src':["'self'"],'style-src':["'self'","'unsafe-inline'"],'font-src':["'self'"],'img-src':["'self'",'data:','blob:','https://*.tile.openstreetmap.org'],
+    'connect-src':["'self'"],'object-src':["'none'"],'upgrade-insecure-requests':null}},crossOriginResourcePolicy:{policy:'cross-origin'}}));
+  app.use((request,response,next)=>{
+    if(['localhost','127.0.0.1','::1'].includes(config.host)&&!['localhost','127.0.0.1','::1','[::1]'].includes(request.hostname))return next(new HttpError(403,'Untrusted Host header.'));
+    const origin=request.get('origin');if(origin&&!config.corsOrigins.includes(origin))return next(new HttpError(403,'Origin is not allowed. Add the consumer origin to CORS_ORIGINS in .env.'));next();
+  });
+  app.use(cors({origin:config.corsOrigins,exposedHeaders:['Content-Length','Content-Range','ETag','Accept-Ranges']}));
+  app.use(express.json({limit:'5mb'}));
+  app.get('/api/health',(request,response)=>response.json({status:'ok',service:'TerrainServer',version:'1.0.0',port:config.port,localTerrainOnly:true}));
+  app.use('/api',(request,response,next)=>{
+    if(!config.apiKey||request.method==='OPTIONS'||request.path==='/openapi.json'||/^\/downloads\/[a-f0-9]{48}\//.test(request.path))return next();
+    const supplied=(request.get('authorization')||'').replace(/^Bearer\s+/i,'');const expected=Buffer.from(config.apiKey);const actual=Buffer.from(supplied);
+    if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return next(new HttpError(401,'API key required. Send Authorization: Bearer <API_KEY>.'));next();
+  });
+  const base=request=>`${request.protocol}://${request.get('host')}`;
+  const urlFor=(request,asset)=>`${base(request)}/api/assets/${asset.id}/download.${asset.extension||'bin'}`;
+  const publicAsset=(request,asset)=>{
+    if(!asset)return null;const {path:filename,...data}=asset;
+    return {...data,url:asset.downloaded?urlFor(request,asset):null,downloadUrl:asset.downloaded?urlFor(request,asset):null,source:asset.sourceId,
+      bounds:asset.bbox,bbox:{minLng:asset.bbox[0],minLat:asset.bbox[1],maxLng:asset.bbox[2],maxLat:asset.bbox[3]},cellSizeMeters:asset.effectiveCellSizeMeters||asset.resolutionMeters,
+      previewUrl:asset.downloaded&&['tif','tiff'].includes(asset.extension)?`${base(request)}/api/assets/${asset.id}/preview.png`:null};
+  };
+  const optionsFor=request=>{
+    const input=request.method==='GET'?request.query:request.body;const result={...input,sourceIds:list(input.sourceIds||input.sources),products:list(input.products),formats:list(input.formats),collectionIds:list(input.collectionIds),localOnly:true};
+    if(result.sourceIds)result.sourceIds=result.sourceIds.map(id=>registry.get(id).id);
+    if(input.bufferMeters!=null)result.bufferMeters=Number(input.bufferMeters);
+    if(input.boundary||input.bbox)normalizeBoundary(result);
+    return result;
+  };
+  const page=(assets,input={})=>{const offset=Number(input.offset||input.token||0);const limit=Number(input.limit||100);
+    if(!Number.isInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>1000)throw new HttpError(400,'offset must be nonnegative and limit must be between 1 and 1000.');
+    return {total:assets.length,offset,limit,nextOffset:offset+limit<assets.length?offset+limit:null,assets:assets.slice(offset,offset+limit)};};
+  const queue=(type,request,response,payload=request.body)=>{const parsed=bodySchema.parse(payload||{});if(parsed.sourceIds)parsed.sourceIds=parsed.sourceIds.map(id=>registry.get(id).id);const job=jobs.enqueue(type,parsed);response.status(202).json({...job,statusUrl:`${base(request)}/api/jobs/${job.id}`});};
+  const courseFor=id=>{const course=catalog.course(id);if(!course)throw new HttpError(404,'Course not found.');return course;};
+  const terrainFor=(request,id)=>{
+    const course=courseFor(id);const assets=catalog.queryAssets({courseId:id,localOnly:true,resolution:'all'}).sort((left,right)=>(left.sourceId==='derived'?0:1)-(right.sourceId==='derived'?0:1)||String(right.generatedAt||right.downloadedAt||'').localeCompare(String(left.generatedAt||left.downloadedAt||'')));
+    const first=product=>assets.find(asset=>asset.product===product);const dem=first('dtm')||first('dem');const contours=assets.find(asset=>asset.product==='contours'&&asset.contourIntervalMeters===1)||first('contours');
+    return {course,dem:dem?urlFor(request,dem):null,dtm:first('dtm')?urlFor(request,first('dtm')):null,dsm:first('dsm')?urlFor(request,first('dsm')):null,
+      contours:contours?urlFor(request,contours):null,hillshade:first('hillshade')?urlFor(request,first('hillshade')):null,slope:first('slope')?urlFor(request,first('slope')):null,
+      assets:assets.map(asset=>publicAsset(request,asset)),localOnly:true};
+  };
+
+  app.get('/api/settings',async(request,response)=>{const disk=await statfs(config.storageRoot).catch(()=>null);response.json({storageRoot:config.storageRoot,storageRoots:catalog.roots(),catalogPath:config.catalogPath,port:config.port,
+    stats:catalog.stats(),disk:disk?{freeBytes:Number(disk.bavail)*Number(disk.bsize),totalBytes:Number(disk.blocks)*Number(disk.bsize)}:null,
+    limits:{maxDiscoveryAssets:config.maxDiscoveryAssets,maxProcessingPixels:config.maxProcessingPixels,maxExportPixels:config.maxExportPixels},downloadConcurrency:config.downloadConcurrency,defaultBufferMeters:config.defaultBufferMeters,updateCheckDays:config.updateCheckDays,lastUpdateCheck:catalog.setting('lastUpdateCheck')||null,apiKeyRequired:!!config.apiKey});});
+  app.patch('/api/settings',async(request,response)=>{if(jobs.active)throw new HttpError(409,'Wait for the active job to finish or cancel it before changing the default storage root.');const root=await persistStorageRoot(config,request.body.storageRoot);catalog.registerRoot(root);response.json({storageRoot:root,previousFilesPreserved:true});});
+  app.get('/api/storage/directories',async(request,response)=>{const directory=request.query.path?path.resolve(String(request.query.path)):config.storageRoot;const entries=await readdir(directory,{withFileTypes:true});
+    const drives=process.platform==='win32'?(await Promise.all('CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async letter=>await stat(`${letter}:/`).then(()=>`${letter}:/`).catch(()=>null)))).filter(Boolean):['/'];
+    response.json({path:directory,parent:path.dirname(directory),drives,directories:entries.filter(entry=>entry.isDirectory()).map(entry=>({name:entry.name,path:path.join(directory,entry.name)})).sort((left,right)=>left.name.localeCompare(right.name))});});
+  app.get('/api/tools',async(request,response)=>response.json(await gis.check()));
+  app.get('/api/sources',(request,response)=>response.json({sources:registry.list(),localOnly:true}));
+  app.get('/api/sources/:id',(request,response)=>{const source=registry.get(request.params.id);response.json({...source,options:registry.options(source)});});
+  app.get('/api/sources/:id/options',(request,response)=>response.json(registry.options(registry.get(request.params.id))));
+  app.post('/api/sources',(request,response)=>response.status(201).json(registry.register(request.body)));
+  const queryAssets=(request,response,extra={})=>{const options={...optionsFor(request),...extra};const result=page(catalog.queryAssets(options),request.method==='GET'?request.query:request.body);response.json({...result,assets:result.assets.map(asset=>publicAsset(request,asset)),localOnly:true});};
+  app.get('/api/sources/:id/assets',(request,response)=>queryAssets(request,response,{sourceIds:[registry.get(request.params.id).id]}));
+  app.get('/api/terrain/query',(request,response)=>queryAssets(request,response));app.post('/api/terrain/query',(request,response)=>queryAssets(request,response));
+  app.get('/api/terrain/footprints',(request,response)=>{const assets=catalog.queryAssets(optionsFor(request));response.json(assetsGeojson(assets.slice(0,2000)));});
+  app.post('/api/discover',(request,response)=>queue('discover',request,response));
+  app.post('/api/sources/:id/discover',(request,response)=>queue('discover',request,response,{...request.body,sourceIds:[registry.get(request.params.id).id]}));
+  app.get('/api/discovery/:id',(request,response)=>{const plan=catalog.plan(request.params.id);if(!plan)throw new HttpError(404,'Acquisition plan not found.');const assets=page(plan.assetIds,request.query);response.json({...plan,...assets,assets:assets.assets.map(id=>publicAsset(request,catalog.asset(id)))});});
+  app.post('/api/downloads',(request,response)=>queue('download',request,response));app.post('/api/acquire',(request,response)=>queue('acquire',request,response));
+  app.get('/api/jobs',(request,response)=>response.json({jobs:catalog.jobs()}));
+  for(const type of ['refresh','updates','process','extract'])app.post(`/api/jobs/${type}`,(request,response)=>queue(type,request,response));
+  app.get('/api/jobs/:id',(request,response)=>{const job=catalog.job(request.params.id);if(!job)throw new HttpError(404,'Job not found.');response.json(job);});
+  app.get('/api/jobs/:id/events',(request,response)=>{if(!catalog.job(request.params.id))throw new HttpError(404,'Job not found.');const after=Number(request.query.after||0);if(!Number.isInteger(after)||after<0)throw new HttpError(400,'after must be a nonnegative log cursor.');response.json({events:catalog.events(request.params.id,after)});});
+  app.post('/api/jobs/:id/cancel',(request,response)=>response.json(jobs.cancel(request.params.id)));
+  app.post('/api/jobs/:id/retry',(request,response)=>{const job=catalog.job(request.params.id);if(!job)throw new HttpError(404,'Job not found.');if(!['failed','cancelled'].includes(job.status))throw new HttpError(409,'Retry applies to failed or cancelled jobs.');queue(job.type,request,response,job.payload);});
+  app.get('/api/courses',(request,response)=>response.json({courses:catalog.courses(String(request.query.q||''))}));
+  app.get('/api/search',(request,response)=>response.json({courses:catalog.courses(String(request.query.q||''))}));
+  const saveCourse=async(request,response)=>{const previous=request.params.id?courseFor(request.params.id):null;const course=catalog.saveCourse({...previous,...request.body,...(request.params.id?{id:request.params.id}:{})});const root=courseDirectory(config.storageRoot,course);await mkdir(root,{recursive:true});await writeFile(path.join(root,'metadata.json'),JSON.stringify(course,null,2));await writeFile(path.join(root,'course_boundary.geojson'),JSON.stringify(course.boundary));response.status(previous?200:201).json(course);};
+  app.post('/api/courses',saveCourse);app.put('/api/course/:id',saveCourse);
+  app.get('/api/course/:id',(request,response)=>response.json(courseFor(request.params.id)));app.get('/api/course/:id/terrain',(request,response)=>response.json(terrainFor(request,request.params.id)));
+  app.get('/api/course/:id/manifest',(request,response)=>{courseFor(request.params.id);const assets=catalog.queryAssets({courseId:request.params.id,localOnly:true,resolution:'all'}).filter(asset=>['tif','tiff','las','laz','copc.laz'].includes(asset.extension));response.json({assets:assets.map(asset=>publicAsset(request,asset)),localOnly:true});});
+  app.post('/api/course/:id/package',async(request,response)=>{
+    const terrain=terrainFor(request,request.params.id);const id=randomUUID();const satellite=request.body.satelliteAssetId?catalog.asset(request.body.satelliteAssetId):null;
+    if(satellite&&!satellite.downloaded)throw new HttpError(409,'Satellite reference must already be local.');
+    const document={id,course:terrain.course.name,courseId:terrain.course.id,hole:request.body.hole||null,boundary:request.body.boundary||terrain.course.boundary,
+      dem:terrain.dem,dtm:terrain.dtm,dsm:terrain.dsm,contours:terrain.contours,hillshade:terrain.hillshade,slope:terrain.slope,satellite:satellite?urlFor(request,satellite):null,
+      hazards:request.body.hazards||null,centerline:request.body.centerline||null,green:request.body.green||null,assets:terrain.assets,generatedAt:new Date().toISOString(),localOnly:true};
+    const root=path.join(courseDirectory(config.storageRoot,terrain.course),'ai');await mkdir(root,{recursive:true});await writeFile(path.join(root,`terrain-package-${id}.json`),JSON.stringify(document,null,2));
+    catalog.db.prepare('INSERT INTO packages VALUES (?,?,?,?)').run(id,terrain.course.id,JSON.stringify(document),document.generatedAt);response.status(201).json(document);
+  });
+  app.get('/api/packages/:id',(request,response)=>{const row=catalog.db.prepare('SELECT metadata FROM packages WHERE id=?').get(request.params.id);if(!row)throw new HttpError(404,'Terrain package not found.');response.json(JSON.parse(row.metadata));});
+
+  const sendAsset=async(request,response,next,asset)=>{
+    const filename=await reader.pathFor(asset);response.set('Cache-Control','private, max-age=31536000, immutable');if(asset.sha256)response.set('ETag',`"${asset.sha256}"`);
+    response.set('Content-Disposition',`attachment; filename="terrain-${asset.id}.${asset.extension||'bin'}"`);response.sendFile(filename,{acceptRanges:true,dotfiles:'allow'},error=>{if(error)next(error);});
+  };
+  app.get(['/api/assets/:id','/api/assets/:id/download.:extension'],(request,response,next)=>sendAsset(request,response,next,catalog.asset(request.params.id)).catch(next));
+  app.get('/api/assets/:id/metadata',(request,response)=>{const asset=catalog.asset(request.params.id);if(!asset)throw new HttpError(404,'Asset not found.');response.json(publicAsset(request,asset));});
+  app.get('/api/assets/:id/preview.png',async(request,response)=>{const asset=catalog.asset(request.params.id);if(!asset)throw new HttpError(404,'Asset not found.');response.type('png').set('Cache-Control','private, max-age=3600').send(await reader.preview(asset,request.query));});
+  app.post('/api/assets/:id/ticket',(request,response)=>{const asset=catalog.asset(request.params.id);if(!asset?.downloaded)throw new HttpError(404,'Local asset not found.');const token=randomBytes(24).toString('hex');for(const[key,ticket]of tickets)if(ticket.expires<Date.now())tickets.delete(key);tickets.set(token,{assetId:asset.id,expires:Date.now()+10*60*1000});response.json({url:`${base(request)}/api/downloads/${token}/terrain.${asset.extension}`});});
+  app.get('/api/downloads/:token/:filename',(request,response,next)=>{const ticket=tickets.get(request.params.token);if(!ticket||ticket.expires<Date.now())return next(new HttpError(401,'Download ticket expired.'));sendAsset(request,response,next,catalog.asset(ticket.assetId)).catch(next);});
+  app.get('/api/terrain/elevation',async(request,response)=>response.json(await reader.elevations([[Number(request.query.longitude??request.query.lng),Number(request.query.latitude??request.query.lat)]],{assetId:request.query.assetId,sourceIds:list(request.query.sourceIds),courseId:request.query.courseId})));
+  app.post('/api/terrain/elevation',async(request,response)=>response.json(await reader.elevations(request.body.points,request.body)));
+  app.get('/api/terrain/grid',async(request,response)=>response.json(await reader.grid(catalog.asset(request.query.assetId),request.query)));
+  const manifest=(request,response)=>{const options=optionsFor(request);const result=page(catalog.queryAssets({...options,resolution:options.resolution||'best'}).filter(asset=>['tif','tiff','las','laz','copc.laz'].includes(asset.extension)),request.query);response.json({...result,assets:result.assets.map(asset=>publicAsset(request,asset)),localOnly:true});};
+  app.get('/api/scorecarder/manifest',manifest);app.post('/api/scorecarder/manifest',manifest);
+  app.get('/api/scorecarder/query',(request,response)=>{
+    let extent;if(request.query.geometry){let geometry;try{geometry=JSON.parse(request.query.geometry);}catch{throw new HttpError(400,'geometry must be an ArcGIS envelope JSON.');}extent=parseBbox({minX:geometry.xmin,minY:geometry.ymin,maxX:geometry.xmax,maxY:geometry.ymax});}else if(request.query.bbox)extent=parseBbox(request.query.bbox);
+    const options=optionsFor(request);const assets=catalog.queryAssets({...options,...(extent?{bbox:extent}:{}),resolution:options.resolution||'best'}).filter(asset=>['tif','tiff','las','laz','copc.laz'].includes(asset.extension));
+    response.json({objectIdFieldName:'OBJECTID',fields:[{name:'OBJECTID',type:'esriFieldTypeOID'},{name:'downloadUrl',type:'esriFieldTypeString'}],features:assets.map((asset,index)=>({attributes:{OBJECTID:index+1,id:asset.id,downloadUrl:urlFor(request,asset),source:asset.sourceId,title:asset.title,extension:asset.extension,bbox:publicAsset(request,asset).bbox,cellSizeMeters:asset.effectiveCellSizeMeters||asset.resolutionMeters},
+      ...(request.query.returnGeometry==='true'?{geometry:{rings:(asset.geometry?.type==='Polygon'?asset.geometry:bboxPolygon(asset.bbox).geometry).coordinates,spatialReference:{wkid:4326}}}:{})})),exceededTransferLimit:false,localOnly:true});
+  });
+  const stacItem=(request,asset)=>({type:'Feature',stac_version:'1.0.0',id:asset.id,collection:asset.sourceId,bbox:asset.bbox,geometry:asset.geometry||bboxPolygon(asset.bbox).geometry,
+    properties:{datetime:asset.providerMetadata?.datetime||asset.generatedAt||asset.downloadedAt,gsd:asset.effectiveCellSizeMeters||asset.resolutionMeters,'terrain:native_resolution_m':asset.nativeResolutionMeters||asset.resolutionMeters,'terrain:product':asset.product,'terrain:vertical_datum':asset.verticalDatum||'As published','proj:epsg':asset.crs?Number(asset.crs.split(':')[1]):null},
+    assets:{data:{href:urlFor(request,asset),type:asset.mediaType||(['tif','tiff'].includes(asset.extension)?'image/tiff; application=geotiff':'application/octet-stream'),roles:['data'],'file:size':asset.bytes}},links:[{rel:'self',href:`${base(request)}/api/stac/items/${asset.id}`}]});
+  const stacSearch=(request,response)=>{const input=request.method==='GET'?request.query:request.body;const collections=list(input.collections);const sourceIds=collections?.filter(id=>catalog.source(id));const collectionIds=collections?.filter(id=>!catalog.source(id));
+    const options={...optionsFor(request),...(sourceIds?.length?{sourceIds}:{}),...(collectionIds?.length?{collectionIds}:{}),...(input.intersects?{boundary:input.intersects}:{}),resolution:input.resolution||'all'};
+    const result=page(catalog.queryAssets(options),input);const next=result.nextOffset!=null?{rel:'next',href:`${base(request)}/api/stac/search`,method:'POST',body:{...input,token:result.nextOffset}}:null;
+    response.json({type:'FeatureCollection',features:result.assets.map(asset=>stacItem(request,asset)),numberMatched:result.total,numberReturned:result.assets.length,links:next?[next]:[],context:{matched:result.total,returned:result.assets.length},localOnly:true});};
+  app.get('/api/stac',(request,response)=>response.json({type:'Catalog',id:'terrainserver',stac_version:'1.0.0',description:'Locally acquired government terrain',links:[{rel:'self',href:`${base(request)}/api/stac`},{rel:'data',href:`${base(request)}/api/stac/collections`},{rel:'search',href:`${base(request)}/api/stac/search`,method:'POST'}],conformsTo:['https://api.stacspec.org/v1.0.0/core','https://api.stacspec.org/v1.0.0/item-search']}));
+  app.get('/api/stac/collections',(request,response)=>response.json({collections:registry.list().map(source=>({type:'Collection',stac_version:'1.0.0',id:source.id,title:source.name,description:source.note||source.name,license:source.license.title,
+    extent:{spatial:{bbox:[source.coverageBbox]},temporal:{interval:[[null,null]]}},links:[{rel:'items',href:`${base(request)}/api/stac/collections/${source.id}/items`}]})),links:[]}));
+  app.get('/api/stac/collections/:id',(request,response)=>{const source=registry.get(request.params.id);response.json({type:'Collection',stac_version:'1.0.0',id:source.id,title:source.name,description:source.note||source.name,license:source.license.title,extent:{spatial:{bbox:[source.coverageBbox]},temporal:{interval:[[null,null]]}},links:[{rel:'items',href:`${base(request)}/api/stac/collections/${source.id}/items`}]});});
+  app.get('/api/stac/collections/:id/items',(request,response)=>{const source=registry.get(request.params.id);const result=page(catalog.queryAssets({...optionsFor(request),sourceIds:[source.id]}),request.query);response.json({type:'FeatureCollection',features:result.assets.map(asset=>stacItem(request,asset)),numberMatched:result.total,numberReturned:result.assets.length,links:result.nextOffset!=null?[{rel:'next',href:`${base(request)}/api/stac/collections/${source.id}/items?offset=${result.nextOffset}&limit=${result.limit}`}]:[]});});
+  app.get('/api/stac/conformance',(request,response)=>response.json({conformsTo:['https://api.stacspec.org/v1.0.0/core','https://api.stacspec.org/v1.0.0/item-search']}));
+  app.get('/api/stac/items/:id',(request,response)=>{const asset=catalog.asset(request.params.id);if(!asset?.downloaded)throw new HttpError(404,'Local STAC item not found.');response.json(stacItem(request,asset));});app.get('/api/stac/search',stacSearch);app.post('/api/stac/search',stacSearch);
+  app.get('/api/openapi.json',(request,response)=>response.json(openapi(config)));
+  const atlas=JSON.parse(await readFile(path.join(projectRoot,'node_modules/world-atlas/countries-110m.json'),'utf8'));const land=topoFeature(atlas,atlas.objects.countries);
+  app.get('/api/map/land',(request,response)=>response.json(land));
+  for(const [name,folder]of Object.entries({leaflet:'leaflet/dist',draw:'leaflet-draw/dist',lucide:'lucide/dist/umd',fonts:'@fontsource/ibm-plex-sans',swagger:'swagger-ui-dist'}))app.use(`/vendor/${name}`,express.static(path.join(projectRoot,'node_modules',folder)));
+  app.get('/favicon.ico',(request,response)=>response.status(204).end());app.get('/docs',(request,response)=>response.sendFile(path.join(projectRoot,'public/docs.html')));
+  app.use(express.static(path.join(projectRoot,'public')));
+  app.use((request,response,next)=>next(new HttpError(404,'Endpoint not found. See /docs.')));
+  app.use((error,request,response,next)=>{if(response.headersSent)return next(error);const status=error instanceof z.ZodError?400:error.status||(['ENOENT','ENOTDIR'].includes(error.code)?404:500);
+    response.status(status).json({error:{message:error instanceof z.ZodError?'Request validation failed':error.message,details:error instanceof z.ZodError?error.issues:error.details||undefined},localTerrainOnly:true});});
+  if(!catalog.setting('lastUpdateCheck'))catalog.setSetting('lastUpdateCheck',new Date().toISOString());
+  const updateTimer=config.updateCheckDays>0?setInterval(()=>{const last=Date.parse(catalog.setting('lastUpdateCheck'));if(Date.now()-last>config.updateCheckDays*86400000&&!catalog.jobs().some(job=>job.type==='updates'&&['running','queued'].includes(job.status)))jobs.enqueue('updates',{});},3600000):null;updateTimer?.unref();
+  if(overrides.startJobs!==false)jobs.wake();
+  return {app,config,catalog,network,gis,registry,jobs,reader,processor,async close(){clearInterval(updateTimer);await jobs.stop();await network.close();catalog.close();}};
+}

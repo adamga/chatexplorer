@@ -1,0 +1,90 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import dotenv from 'dotenv';
+import { HttpError } from './spatial.js';
+
+export const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+export function loadConfig(overrides = {}) {
+  dotenv.config({ path: path.join(projectRoot, '.env'), quiet: true });
+  const number = (key, fallback, minimum = 1, maximum = Number.MAX_SAFE_INTEGER) => {
+    const value = Number(process.env[key] || fallback);
+    if (!Number.isFinite(value) || value < minimum || value > maximum) throw new Error(`Invalid ${key} in .env.`);
+    return value;
+  };
+  const config = {
+    host: process.env.HOST || '127.0.0.1',
+    port: number('PORT', 3123, 1, 65535),
+    storageRoot: path.resolve(process.env.STORAGE_ROOT || path.join(projectRoot, 'terrain-data')),
+    catalogPath: path.resolve(process.env.CATALOG_PATH || path.join(projectRoot, 'data', 'catalog.sqlite')),
+    downloadConcurrency: number('DOWNLOAD_CONCURRENCY', 2, 1, 16),
+    downloadRetries: number('DOWNLOAD_RETRIES', 3, 0, 10),
+    requestTimeoutMs: number('REQUEST_TIMEOUT_MS', 60000),
+    downloadIdleTimeoutMs: number('DOWNLOAD_IDLE_TIMEOUT_MS', 120000),
+    maxDiscoveryAssets: number('MAX_DISCOVERY_ASSETS', 100000),
+    minFreeDiskGb: number('MIN_FREE_DISK_GB', 1, 0),
+    defaultBufferMeters: number('DEFAULT_BUFFER_METERS', 500, 0, 10000),
+    maxExportPixels: number('MAX_EXPORT_PIXELS', 4096, 64, 16384),
+    maxProcessingPixels: number('MAX_PROCESSING_PIXELS', 100000000),
+    updateCheckDays: number('UPDATE_CHECK_DAYS', 30, 0, 3650),
+    apiKey: process.env.API_KEY || '',
+    corsOrigins: (process.env.CORS_ORIGINS || 'http://localhost:3123,http://127.0.0.1:3123').split(',').map((value) => value.trim()).filter(Boolean),
+    allowPrivateDownloadHosts: process.env.ALLOW_PRIVATE_DOWNLOAD_HOSTS === 'true',
+    extraDownloadHosts: (process.env.DOWNLOAD_ALLOWED_HOSTS || '').split(',').map((value) => value.trim()).filter(Boolean),
+    gisEnvRoot: process.env.GIS_ENV_ROOT || '',
+    tools: {
+      pdal: process.env.PDAL_BIN || 'pdal',
+      gdalinfo: process.env.GDALINFO_BIN || 'gdalinfo',
+      gdalwarp: process.env.GDALWARP_BIN || 'gdalwarp',
+      gdal_translate: process.env.GDAL_TRANSLATE_BIN || 'gdal_translate',
+      gdal_contour: process.env.GDAL_CONTOUR_BIN || 'gdal_contour',
+      gdaldem: process.env.GDALDEM_BIN || 'gdaldem',
+      ogr2ogr: process.env.OGR2OGR_BIN || 'ogr2ogr'
+    },
+    envPath: path.join(projectRoot, '.env'),
+    ...overrides
+  };
+  if (!['localhost', '127.0.0.1', '::1'].includes(config.host) && !config.apiKey) {
+    throw new Error('Set API_KEY before binding HOST to a non-loopback address.');
+  }
+  return config;
+}
+
+export async function persistStorageRoot(config, root) {
+  if (typeof root !== 'string' || !root.trim() || !path.isAbsolute(root) || root.includes('\0')) {
+    throw new HttpError(400, 'storageRoot must be an absolute filesystem path.');
+  }
+  const resolved = path.resolve(root);
+  await mkdir(resolved, { recursive: true });
+  const probe = path.join(resolved, `.terrainserver-write-${crypto.randomUUID()}`);
+  await writeFile(probe, '');
+  const { unlink } = await import('node:fs/promises');
+  await unlink(probe);
+  const original = await readFile(config.envPath, 'utf8').catch((error) => { if (error.code === 'ENOENT') return ''; throw error; });
+  const values = dotenv.parse(original);
+  values.STORAGE_ROOT = resolved.replaceAll('\\', '/');
+  const content = Object.entries(values).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n') + '\n';
+  const temporary = `${config.envPath}.tmp`;
+  await writeFile(temporary, content, { mode: 0o600 });
+  await rename(temporary, config.envPath);
+  config.storageRoot = resolved;
+  process.env.STORAGE_ROOT = resolved;
+  return resolved;
+}
+
+export function safeSegment(value) {
+  const segment = String(value || '').normalize('NFKD').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 100);
+  if (!segment) throw new HttpError(400, 'Identifier must contain letters or numbers.');
+  return segment;
+}
+
+export function courseDirectory(root, course) {
+  const country = course?.country === 'US' ? 'usa' : 'canada';
+  return path.join(root, country, safeSegment(course?.province || course?.region || 'national').toLowerCase(), safeSegment(course?.id || '_repository'));
+}
+
+export function isContained(root, filename) {
+  const relative = path.relative(path.resolve(root), path.resolve(filename));
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}

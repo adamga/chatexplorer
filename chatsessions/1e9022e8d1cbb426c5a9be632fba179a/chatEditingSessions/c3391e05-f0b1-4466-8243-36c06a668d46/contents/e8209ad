@@ -1,0 +1,145 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp,writeFile,rm,readFile,stat,utimes } from 'node:fs/promises';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { crc32 } from 'node:zlib';
+import path from 'node:path';
+import os from 'node:os';
+import request from 'supertest';
+import { writeArrayBuffer } from 'geotiff';
+import { createService } from '../src/app.js';
+import { gridImage } from '../src/terrain.js';
+import { extractArchive } from '../src/indexes.js';
+
+function storedArchive(filename, data) {
+  const name=Buffer.from(filename);const checksum=crc32(data);const local=Buffer.alloc(30);const central=Buffer.alloc(46);const end=Buffer.alloc(22);
+  local.writeUInt32LE(0x04034b50);local.writeUInt16LE(20,4);local.writeUInt32LE(checksum,14);local.writeUInt32LE(data.length,18);local.writeUInt32LE(data.length,22);local.writeUInt16LE(name.length,26);
+  central.writeUInt32LE(0x02014b50);central.writeUInt16LE(20,4);central.writeUInt16LE(20,6);central.writeUInt32LE(checksum,16);central.writeUInt32LE(data.length,20);central.writeUInt32LE(data.length,24);central.writeUInt16LE(name.length,28);
+  end.writeUInt32LE(0x06054b50);end.writeUInt16LE(1,8);end.writeUInt16LE(1,10);end.writeUInt32LE(central.length+name.length,12);end.writeUInt32LE(local.length+name.length+data.length,16);
+  return Buffer.concat([local,name,data,central,name,end]);
+}
+
+test('local API serves discovery, Range files, Scorecarder manifests, STAC, and bounded raster queries',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-api-'));const service=await createService({storageRoot:root,catalogPath:':memory:',updateCheckDays:0,startJobs:false});
+  try{
+    await request(service.app).get('/api/health').expect(200);
+    const sources=await request(service.app).get('/api/sources').expect(200);assert.ok(sources.body.sources.length>=9);
+    await request(service.app).post('/api/courses').send({id:'fixture',name:'Fixture',country:'CA',province:'ON',bbox:[-79.5,43.59,-79.49,43.6],bufferMeters:0}).expect(201);
+    const values=Array.from({length:100},(value,index)=>100+index);
+    const bytes=Buffer.from(writeArrayBuffer(values,{width:10,height:10,BitsPerSample:[8],SampleFormat:[1],ModelPixelScale:[0.001,0.001,0],ModelTiepoint:[0,0,0,-79.5,43.6,0],GeographicTypeGeoKey:4326,GTModelTypeGeoKey:2,GTRasterTypeGeoKey:1,GDAL_NODATA:'255'}));
+    const filename=path.join(root,'fixture.tif');await writeFile(filename,bytes);
+    const asset=service.catalog.saveAsset({sourceId:'ontario',title:'Fixture Raster',product:'dtm',extension:'tif',path:filename,bbox:[-79.5,43.59,-79.49,43.6],resolutionMeters:1,bytes:bytes.length,sha256:'fixture-hash'});service.catalog.linkAsset('fixture',asset.id);
+    for(const product of ['hillshade','slope']){const visual=service.catalog.saveAsset({sourceId:'derived',title:`Visualization ${product}`,product,extension:'tif',url:`https://example.gov/${product}.tif`,path:filename,bbox:asset.bbox,resolutionMeters:1,bytes:bytes.length});service.catalog.linkAsset('fixture',visual.id);}
+    const binary=await request(service.app).get(`/api/assets/${asset.id}/download.tif`).set('Range','bytes=0-7').expect(206);assert.equal(binary.headers['content-range'],`bytes 0-7/${bytes.length}`);
+    const manifest=await request(service.app).get('/api/scorecarder/manifest?bbox=-79.5,43.59,-79.49,43.6').expect(200);assert.equal(manifest.body.assets.length,1);assert.ok(manifest.body.assets[0].url.endsWith('.tif'));assert.equal(manifest.body.assets[0].bbox.minLng,-79.5);
+    await request(service.app).get('/api/course/fixture/manifest').expect(200).then(result=>assert.deepEqual(result.body.assets.map(value=>value.product),['dtm']));
+    const arcgis=await request(service.app).get('/api/scorecarder/query').query({geometry:JSON.stringify({xmin:-79.5,ymin:43.59,xmax:-79.49,ymax:43.6})}).expect(200);assert.equal(arcgis.body.features.length,1);assert.ok(arcgis.body.features[0].attributes.downloadUrl.endsWith('.tif'));
+    const stac=await request(service.app).post('/api/stac/search').send({bbox:[-79.5,43.59,-79.49,43.6],collections:['ontario']}).expect(200);assert.equal(stac.body.features.length,1);
+    const genericStac=await request(service.app).post('/api/stac/search').send({bbox:asset.bbox}).expect(200);assert.equal(genericStac.body.features.length,3);
+    const elevationStac=await request(service.app).post('/api/scorecarder/stac/search').send({bbox:asset.bbox}).expect(200);assert.equal(elevationStac.body.features.length,1);assert.equal(elevationStac.body.features[0].properties['terrain:product'],'dtm');assert.match(elevationStac.body.features[0].links[0].href,/\/api\/scorecarder\/stac\/items\//);
+    const visualId=genericStac.body.features.find(value=>value.properties['terrain:product']==='hillshade').id;await request(service.app).get(`/api/scorecarder/stac/items/${visualId}`).expect(404);
+    await request(service.app).get('/api/scorecarder/stac/collections/derived/items').expect(200).then(result=>assert.equal(result.body.features.length,0));
+    await request(service.app).get('/api/stac/collections/ontario/items').expect(200).then(result=>assert.equal(result.body.features.length,1));
+    await request(service.app).get('/api/stac/collections/derived').expect(200);
+    const terrain=await request(service.app).get('/api/course/fixture/terrain').expect(200);assert.ok(terrain.body.dem.endsWith('.tif'));
+    const sample=await request(service.app).get('/api/terrain/elevation?longitude=-79.4995&latitude=43.5995').expect(200);assert.equal(sample.body.points[0].elevation,100);
+    const grid=await request(service.app).get(`/api/terrain/grid?assetId=${asset.id}&width=16&height=16`).expect(200);assert.equal(grid.body.values.length,256);assert.equal(grid.body.localOnly,true);
+    await request(service.app).get(`/api/terrain/grid?assetId=${asset.id}&width=abc`).expect(400);
+    const preview=await request(service.app).get(`/api/assets/${asset.id}/preview.png`).expect(200);assert.ok(preview.headers['content-type'].includes('image/png'));
+    await request(service.app).get('/api/terrain/query?bbox=-75,43,-74,44').expect(200).then(result=>assert.equal(result.body.total,0));
+    await request(service.app).get('/api/terrain/query?q=not-present').expect(200).then(result=>assert.equal(result.body.total,0));
+    await request(service.app).get('/api/terrain/query?q=Fixture').expect(200).then(result=>assert.equal(result.body.total,1));
+    await request(service.app).get('/api/terrain/query?limit=100000').expect(400);
+    await request(service.app).get('/api/openapi.json').expect(200);await request(service.app).get('/docs').expect(200);
+  }finally{await service.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('API authentication, CORS origin checks, and DNS-rebinding Host protection',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-auth-'));const service=await createService({storageRoot:root,catalogPath:':memory:',apiKey:'test-key',updateCheckDays:0,startJobs:false});
+  try{
+    await request(service.app).get('/api/settings').expect(401);
+    await request(service.app).get('/api/settings').set('Authorization','Bearer test-key').expect(200);
+    await request(service.app).post('/api/courses').set('Authorization','Bearer test-key').set('Origin','https://untrusted.example').send({}).expect(403);
+    await request(service.app).get('/api/health').set('Host','attacker.example').expect(403);
+    await request(service.app).get('/api/health').expect(200);
+  }finally{await service.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('one-source Scorecarder acquisition unpacks ZIPs and converts IMG into locally served native GeoTIFFs',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-preset-'));
+  const repository=path.join(root,'chosen-repository');const extent=[-79.5,43.59,-79.49,43.6];
+  const bytes=Buffer.from(writeArrayBuffer(new Uint8Array(100).fill(100),{width:10,height:10,BitsPerSample:[8],SampleFormat:[1],ModelPixelScale:[0.001,0.001,0],ModelTiepoint:[0,0,0,-79.5,43.6,0],GeographicTypeGeoKey:4326,GTModelTypeGeoKey:2,GTRasterTypeGeoKey:1}));
+  const archive=storedArchive('tiles/native.tif',bytes);const requests=[];let image;let downloads=0;
+  const server=createServer(async(incoming,response)=>{
+    const url=new URL(incoming.url,'http://localhost');
+    if(url.pathname==='/native.zip'||url.pathname==='/native.img'){downloads++;const content=url.pathname.endsWith('.zip')?archive:image;response.writeHead(200,{'Content-Length':content.length,ETag:'"preset-fixture"'});response.end(content);return;}
+    const chunks=[];for await(const chunk of incoming)chunks.push(chunk);
+    const parameters=incoming.method==='POST'?new URLSearchParams(Buffer.concat(chunks).toString()):url.searchParams;requests.push({method:incoming.method,parameters});
+    const provider=`http://127.0.0.1:${server.address().port}`;
+    const result=parameters.get('returnIdsOnly')?{objectIds:[1]}:{type:'FeatureCollection',features:[{type:'Feature',geometry:{type:'Polygon',coordinates:[[[-79.5,43.59],[-79.49,43.59],[-79.49,43.6],[-79.5,43.6],[-79.5,43.59]]]},properties:{DownloadLink:`${provider}/native.zip`,ImageLink:`${provider}/native.img`,Resolution:1}}]};
+    response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify(result));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const service=await createService({storageRoot:path.join(root,'default'),catalogPath:':memory:',updateCheckDays:0,startJobs:false,allowPrivateDownloadHosts:true,minFreeDiskGb:0});
+  try {
+    const input=path.join(root,'original.tif');const img=path.join(root,'original.img');await writeFile(input,bytes);
+    await service.gis.run('gdal_translate',['-of','HFA',input,img]);image=await readFile(img);
+    let inspections=0;const runGis=service.gis.run.bind(service.gis);service.gis.run=async(...args)=>{inspections++;return runGis(...args);};
+    service.registry.register({id:'preset-fixture',name:'Preset Fixture',adapter:'arcgis',country:'CA',region:'ON',coverageBbox:extent,
+      license:{title:'Fixture licence',url:'https://example.gov/licence'},collections:[{id:'native-ground',products:['dtm'],formats:['zip','img'],endpoint:`http://127.0.0.1:${server.address().port}/FeatureServer/0`},{id:'surface-only',products:['dsm'],formats:['tif'],endpoint:`http://127.0.0.1:${server.address().port}/SurfaceServer/0`}]});
+    await request(service.app).post('/api/sources/preset-fixture/acquire').send({storageRoot:repository,products:['dsm']}).expect(400);
+    const settled=once(service.jobs,'settled');const queued=await request(service.app).post('/api/sources/preset-fixture/acquire').send({storageRoot:repository}).expect(202);await settled;
+    const job=service.catalog.job(queued.body.id);assert.equal(job.status,'completed',job.error);assert.equal(job.progress.result.scorecarder.readyAssets,2);
+    assert.deepEqual(job.payload.products,['dtm']);assert.equal(job.payload.storageRoot,repository);assert.equal(job.payload.processAfterDownload,false);
+    assert.equal(requests[0].parameters.has('geometry'),false);assert.equal(requests[1].method,'POST');
+    const manifest=await request(service.app).get('/api/scorecarder/manifest').query({sources:'preset-fixture'}).expect(200);assert.equal(manifest.body.assets.length,2);
+    for(const asset of manifest.body.assets){assert.equal(asset.extension,'tif');assert.deepEqual(asset.pixelSize,[0.001,0.001]);await request(service.app).get(`/api/assets/${asset.id}/download.tif`).set('Range','bytes=0-7').expect(206);}
+    const local=service.catalog.queryAssets({sourceIds:['preset-fixture'],localOnly:true});assert.equal(local.length,4);assert.ok(local.every(asset=>asset.path.startsWith(repository)));
+    const initialInspections=inspections;
+    const again=once(service.jobs,'settled');const retry=await request(service.app).post('/api/sources/preset-fixture/acquire').send({storageRoot:repository}).expect(202);await again;
+    assert.equal(service.catalog.job(retry.body.id).status,'completed');assert.equal(downloads,2);assert.equal(service.catalog.queryAssets({sourceIds:['preset-fixture'],localOnly:true}).length,4);
+    assert.equal(service.catalog.job(retry.body.id).progress.result.reused,2);assert.equal(inspections,initialInspections);
+    for(const asset of local.filter(asset=>['zip','img'].includes(asset.extension)))assert.equal(service.catalog.asset(asset.id).etag,'"preset-fixture"');
+    assert.equal(service.catalog.job(retry.body.id).progress.result.bytes,0);assert.equal(service.catalog.job(retry.body.id).progress.result.existingBytes,archive.length+image.length);
+    const rawZip=local.find(asset=>asset.extension==='zip');const tile=local.find(asset=>asset.parentAssetId===rawZip.id&&asset.extension==='tif');
+    service.catalog.saveAsset({...service.catalog.asset(rawZip.id),scorecarderPreparation:null});service.catalog.saveAsset({...service.catalog.asset(tile.id),localFile:null});
+    const adopting=once(service.jobs,'settled');const adopted=await request(service.app).post('/api/sources/preset-fixture/acquire').send({storageRoot:repository}).expect(202);await adopting;
+    assert.equal(service.catalog.job(adopted.body.id).status,'completed');assert.equal(downloads,2);assert.equal(inspections,initialInspections);
+    await rm(tile.path);const repairing=once(service.jobs,'settled');const repaired=await request(service.app).post('/api/sources/preset-fixture/acquire').send({storageRoot:repository}).expect(202);await repairing;
+    assert.equal(service.catalog.job(repaired.body.id).status,'completed');assert.equal(downloads,2);assert.equal(inspections,initialInspections+1);assert.deepEqual(await readFile(tile.path),bytes);
+    const changed=Buffer.from(bytes);changed[changed.length-1]^=1;await writeFile(tile.path,changed);const future=new Date((await stat(tile.path)).mtimeMs+60000);await utimes(tile.path,future,future);
+    const checking=once(service.jobs,'settled');const rejected=await request(service.app).post('/api/sources/preset-fixture/acquire').send({storageRoot:repository}).expect(202);await checking;
+    assert.equal(service.catalog.job(rejected.body.id).status,'failed');assert.match(service.catalog.job(rejected.body.id).progress.failedAssets[0].message,/recorded checksum/);assert.equal(downloads,2);assert.deepEqual(await readFile(tile.path),changed);
+  }finally{await service.close();await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});}
+});
+
+test('archive cancellation publishes no partial members and a retry preserves the original ZIP',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-extract-cancel-'));const filename=path.join(root,'source.zip');const destination=path.join(root,'extracted');
+  const content=Buffer.alloc(1024*1024);const archive=storedArchive('tiles/native.tif',content);await writeFile(filename,archive);
+  try {
+    const controller=new AbortController();const operation=extractArchive(filename,destination,10*1024*1024,{signal:controller.signal});controller.abort(new Error('Cancelled fixture'));
+    await assert.rejects(operation,/Cancelled fixture/);
+    const published=await readFile(path.join(destination,'tiles','native.tif')).then(()=>true,error=>{if(error.code==='ENOENT')return false;throw error;});assert.equal(published,false);
+    const files=await extractArchive(filename,destination,10*1024*1024);assert.equal(files.length,1);assert.deepEqual(await readFile(files[0]),content);assert.deepEqual(await readFile(filename),archive);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('large raster display chooses a native internal overview before reading pixels',async()=>{
+  const reference={getOrigin:()=>[0,10,0],getResolution:()=>[0.001,-0.001,0],getWidth:()=>10000,getHeight:()=>10000,fileDirectory:{}};
+  const overview={getResolution:()=>[0.016,-0.016,0],getWidth:()=>625,getHeight:()=>625,fileDirectory:{NewSubfileType:1}};
+  const tiff={getImageCount:async()=>2,getImage:async index=>index?overview:reference};
+  const selected=await gridImage(tiff,reference,[0,0,10,10],'EPSG:4326',256,256);
+  assert.equal(selected.image,overview);assert.equal(selected.overview,true);assert.ok((selected.window[2]-selected.window[0])*(selected.window[3]-selected.window[1])<1000000);
+});
+
+test('large strips use bounded local GDAL for both preview grids and native elevation sampling',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-large-'));const service=await createService({storageRoot:root,catalogPath:':memory:',updateCheckDays:0,startJobs:false});
+  try {
+    const values=new Uint8Array(2100*2100).fill(100);const buffer=Buffer.from(writeArrayBuffer(values,{width:2100,height:2100,BitsPerSample:[8],SampleFormat:[1],RowsPerStrip:2100,ModelPixelScale:[0.00001,0.00001,0],ModelTiepoint:[0,0,0,-79.5,43.6,0],GeographicTypeGeoKey:4326,GTModelTypeGeoKey:2,GTRasterTypeGeoKey:1}));
+    const filename=path.join(root,'large.tif');await writeFile(filename,buffer);
+    const asset=service.catalog.saveAsset({sourceId:'ontario',product:'dtm',extension:'tif',path:filename,bbox:[-79.5,43.579,-79.479,43.6],bytes:buffer.length});
+    const grid=await service.reader.grid(asset,{width:16,height:16});assert.equal(grid.min,100);assert.equal(grid.max,100);assert.equal(grid.overviewUsed,true);assert.equal(grid.sourcePixelsRead,256);
+    const elevation=await service.reader.sample(asset,[[-79.49,43.59]]);assert.deepEqual(elevation,[100]);
+  }finally{await service.close();await rm(root,{recursive:true,force:true});}
+});

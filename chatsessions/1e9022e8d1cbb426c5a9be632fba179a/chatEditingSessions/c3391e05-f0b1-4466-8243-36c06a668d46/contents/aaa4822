@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+NO_SERVICE=0
+if [[ ${1:-} == --no-service ]]; then NO_SERVICE=1; elif (($#)); then printf '%s\n' 'Use --no-service only for a foreground installation.' >&2; exit 1; fi
+if [[ ! -f "$APP_DIR/installation.json" || ! -x "$APP_DIR/runtime/node/bin/node" || "$APP_DIR" == / || "$APP_DIR" == "$HOME" ]]; then printf '%s\n' 'Not an installed TerrainServer program directory.' >&2; exit 1; fi
+if ((NO_SERVICE == 0)); then
+  if ((EUID != 0)); then printf '%s\n' 'System service removal requires root.' >&2; exit 1; fi
+  if [[ -f /etc/systemd/system/terrainserver.service ]]; then
+    if ! grep -Fq "$APP_DIR/runtime/node/bin/node" /etc/systemd/system/terrainserver.service; then printf '%s\n' 'Service belongs to another installation; refusing to remove it.' >&2; exit 1; fi
+    systemctl disable --now terrainserver.service
+    rm -- /etc/systemd/system/terrainserver.service
+    systemctl daemon-reload
+  fi
+fi
+"$APP_DIR/runtime/node/bin/node" --input-type=module -e 'import fs from "node:fs";const config=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log("Preserving configuration: "+config.envPath);console.log("Preserving terrain storage: "+config.storageRoot);console.log("Preserving catalog: "+config.catalogPath);' "$APP_DIR/installation.json"
+rm -rf -- "$APP_DIR"
+printf '%s\n' 'TerrainServer program removed. Persistent state, terrain files, and the service account were retained.'

@@ -1,0 +1,370 @@
+import { bbox, feature, featureCollection, union } from '@turf/turf';
+import { arcgisToGeoJSON } from '@terraformer/arcgis';
+import { normalizeBoundary, parseBbox, selectAssets, intersectsBoundary, HttpError } from './spatial.js';
+import { projectExtent, geographicExtent } from './gis.js';
+import { attributeLinks, attributeResolution, canonicalDownloadUrl, extensionFor } from './indexes.js';
+import { assetId } from './catalog.js';
+
+const caLicense = { title: 'Open Government Licence - Canada', url: 'https://open.canada.ca/en/open-government-licence-canada', attributionRequired: true };
+const canada = [-141, 41.5, -52, 84];
+const stacRoot = 'https://datacube.services.geo.ca/stac/api';
+const cloudIndex = 'https://maps-cartes.services.geo.ca/server_serveur/rest/services/NRCan/lidar_point_cloud_canelevation_en/MapServer/1';
+const ontarioBase = 'https://services1.arcgis.com/TJH5KDher0W13Kgo/arcgis/rest/services';
+const imageServer = 'https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/Ontario_DTM_LidarDerived/ImageServer';
+const bcBase = 'https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_BC_S3_Public/FeatureServer';
+const federalCollections = [
+  { id: 'hrdem-lidar', name: 'HRDEM project DTM / DSM', products: ['dtm', 'dsm'], resolutionMeters: null, formats: ['tif'], delivery: 'mosaics' },
+  { id: 'hrdem-mosaic-1m', name: 'HRDEM national 1 m mosaic', products: ['dtm', 'dsm'], resolutionMeters: 1, formats: ['tif'], delivery: 'mosaics' },
+  { id: 'hrdem-mosaic-2m', name: 'HRDEM national 2 m mosaic', products: ['dtm', 'dsm'], resolutionMeters: 2, formats: ['tif'], delivery: 'mosaics' },
+  { id: 'hrdem-arcticdem', name: 'Arctic DEM', products: ['dem', 'dsm'], resolutionMeters: null, formats: ['tif'], delivery: 'mosaics' },
+  { id: 'cdem', name: 'Canadian Digital Elevation Model', products: ['dem'], resolutionMeters: null, resolutionUnit: 'angular', formats: ['tif'], delivery: 'mosaics' },
+  { id: 'mrdem-30', name: 'Medium Resolution DEM 30 m', products: ['dem'], resolutionMeters: 30, formats: ['tif'], delivery: 'mosaics' },
+  { id: 'canelevation-point-cloud', name: 'CanElevation classified point clouds', products: ['point-cloud'], resolutionMeters: null, formats: ['laz', 'las', 'copc.laz'], delivery: 'tiles', endpoint: cloudIndex }
+];
+
+export const builtInSources = [
+  { id: 'ontario', name: 'Ontario GeoHub', country: 'CA', region: 'ON', coverageBbox: [-95.2, 41.5, -74, 57.5], homepage: 'https://geohub.lio.gov.on.ca', adapter: 'ontario',
+    license: { title: 'Open Government Licence - Ontario', url: 'https://www.ontario.ca/page/open-government-licence-ontario', attributionRequired: true },
+    note: 'Published native raster grid is 0.5 m. Finer requested exports are resampling, not a more precise survey. Some point-cloud tiles require ordering and have no anonymous download.',
+    collections: [
+      { id: 'ontario-dtm-export', name: 'Clipped DTM GeoTIFF', products: ['dtm'], resolutionMeters: 0.5, formats: ['tif'], delivery: 'export', endpoint: imageServer },
+      { id: 'ontario-point-cloud', name: 'Classified point-cloud tile index', products: ['point-cloud'], resolutionMeters: null, formats: ['laz', 'las', 'zlas', 'zip'], delivery: 'tiles', endpoint: `${ontarioBase}/OntarioClassifiedPC_LidarDerived_TileIndex/FeatureServer/0` },
+      { id: 'ontario-dtm-packages', name: 'Native DTM packages', products: ['dtm'], resolutionMeters: null, formats: ['zip', 'tif'], delivery: 'packages', endpoint: `${ontarioBase}/Ontario_Digital_Terrain_Model_Lidar_Derived_WFL1/FeatureServer/0` },
+      { id: 'ontario-dsm-packages', name: 'Native DSM packages', products: ['dsm'], resolutionMeters: null, formats: ['zip', 'tif'], delivery: 'packages', endpoint: `${ontarioBase}/Ontario_DSM_Lidar_Derived_Package_Map_WFL1/FeatureServer/0` }
+    ] },
+  { id: 'nrcan', name: 'NRCan CanElevation / HRDEM / CDEM', country: 'CA', coverageBbox: canada, homepage: 'https://open.canada.ca', adapter: 'federal', license: caLicense, collections: federalCollections },
+  { id: 'pei', name: 'Prince Edward Island 2020 LiDAR', country: 'CA', region: 'PE', coverageBbox: [-64.8, 45.6, -61.8, 47.4], homepage: 'https://data.princeedwardisland.ca/pages/8b6e350d228c49169b67b966af4f951e', adapter: 'pei', license: caLicense,
+    note: '2020 survey: at least 6 points/m2. Tile DTM is 1 m; project DTM/DSM and raw point clouds are also available through NRCan.',
+    collections: [{ id: 'pei-2020-dtm-tiles', name: 'PEI 2020 1 m DTM tiles', products: ['dtm'], resolutionMeters: 1, formats: ['tif'], delivery: 'tiles',
+      indexUrl: 'https://ftp.maps.canada.ca/pub/elevation/dem_mne/highresolution_hauteresolution/dtm_mnt/1m/PEI/Prince_Edward_Island_2020/INDEX_utm20_PEI_Prince_Edward_Island_2020.zip', indexFile: 'INDEX_utm20_PEI_Prince_Edward_Island_2020.shp', urlFields: ['Ftp_dtm'] }, ...federalCollections] },
+  { id: 'bc', name: 'LidarBC', country: 'CA', region: 'BC', coverageBbox: [-139.1, 48.2, -114, 60.1], homepage: 'https://catalogue.data.gov.bc.ca/dataset/lidarbc-open-lidar-data-portal', adapter: 'arcgis',
+    license: { title: 'Open Government Licence - British Columbia', url: 'https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc', attributionRequired: true },
+    collections: [
+      ...[1, 2, 3].map((layer, index) => ({ id: `bc-dsm-${layer}`, name: `DSM index 1:${[2500,10000,20000][index]}`, products: ['dsm'], formats: ['tif'], resolutionMeters: null, delivery: 'tiles', endpoint: `${bcBase}/${layer}` })),
+      { id: 'bc-point-cloud', name: 'Point-cloud tiles', products: ['point-cloud'], formats: ['laz', 'las', 'copc.laz'], resolutionMeters: null, delivery: 'tiles', endpoint: `${bcBase}/4` },
+      ...[5, 6].map((layer, index) => ({ id: `bc-dtm-${layer}`, name: `DEM index 1:${[2500,20000][index]}`, products: ['dtm'], formats: ['tif'], resolutionMeters: null, delivery: 'tiles', endpoint: `${bcBase}/${layer}` }))
+    ] },
+  { id: 'quebec', name: 'Donnees Quebec LiDAR', country: 'CA', region: 'QC', coverageBbox: [-79.8, 44.8, -57, 62.7], homepage: 'https://www.donneesquebec.ca/recherche/dataset/donnees-lidar-du-quebec', adapter: 'quebec',
+    license: { title: 'Licence ouverte Quebec (CC BY 4.0)', url: 'https://www.donneesquebec.ca/fr/licence/', attributionRequired: true },
+    collections: [
+      { id: 'quebec-mnt', name: 'Native MNT / DTM tiles', products: ['dtm'], formats: ['tif', 'zip'], resolutionMeters: 1, delivery: 'tiles', indexUrl: 'https://diffusion.mern.gouv.qc.ca/diffusion/RGQ/Imagerie/MNT/_Index/Index_MNT_GPKG.zip', indexFile: 'Index_MNT.gpkg', urlFields: ['TELECHARGEMENT_TUILE'] },
+      ...federalCollections
+    ], note: 'Quebec MNT index plus federal DSM/point-cloud coverage. Add other provincial indexes with the configurable source API.' },
+  ...[
+    ['alberta', 'Alberta Open Data / NRCan', 'AB', [-120.1, 48.9, -109.9, 60.1], 'https://open.alberta.ca'],
+    ['nova-scotia', 'Nova Scotia Open Data / NRCan', 'NS', [-66.6, 43.3, -59.6, 47.1], 'https://data.novascotia.ca'],
+    ['saskatchewan', 'Saskatchewan Open Data / NRCan', 'SK', [-110.1, 48.9, -101.3, 60.1], 'https://geohub.saskatchewan.ca']
+  ].map(([id, name, region, coverageBbox, homepage]) => ({ id, name, country: 'CA', region, coverageBbox, homepage, adapter: 'federal', license: caLicense, collections: federalCollections,
+    note: 'Automatic downloads use open federal CanElevation coverage in this province. Account-gated or paid provincial products are not represented as freely downloadable.' })),
+  { id: 'usgs-3dep', name: 'USGS 3DEP', country: 'US', coverageBbox: [-179.9, 18, -65, 72], homepage: 'https://www.usgs.gov/3d-elevation-program', adapter: 'usgs',
+    license: { title: 'USGS public domain', url: 'https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits', attributionRequired: false },
+    collections: [
+      { id: 'lpc', name: 'LiDAR Point Cloud (LPC)', dataset: 'Lidar Point Cloud (LPC)', products: ['point-cloud'], formats: ['laz', 'las'], resolutionMeters: null },
+      { id: 'dem-1m', name: '1 m DEM', dataset: 'Digital Elevation Model (DEM) 1 meter', products: ['dtm'], formats: ['tif', 'img'], resolutionMeters: 1 },
+      { id: 'seamless-1m', name: 'Seamless 1 m DEM', dataset: 'Seamless 1-m DEM (S1M)', products: ['dtm'], formats: ['tif'], resolutionMeters: 1 },
+      { id: 'dem-third-arcsecond', name: '1/3 arc-second DEM', dataset: 'National Elevation Dataset (NED) 1/3 arc-second', products: ['dem'], formats: ['tif'], resolutionMeters: null, resolutionUnit: 'arc-seconds', angularResolution: 1/3 },
+      { id: 'dem-arcsecond', name: '1 arc-second DEM', dataset: 'National Elevation Dataset (NED) 1 arc-second', products: ['dem'], formats: ['tif'], resolutionMeters: null, resolutionUnit: 'arc-seconds', angularResolution: 1 },
+      { id: 'dem-ninth-arcsecond', name: '1/9 arc-second DEM', dataset: 'National Elevation Dataset (NED) 1/9 arc-second', products: ['dem'], formats: ['tif','img'], resolutionMeters: null, resolutionUnit: 'arc-seconds', angularResolution: 1/9 },
+      { id: 'alaska-ifsar', name: 'Alaska IFSAR 5 m DEM', dataset: 'Alaska IFSAR 5 meter DEM', products: ['dem'], formats: ['tif','img'], resolutionMeters: 5 },
+      { id: 'alaska-2-arcsecond', name: 'Alaska 2 arc-second DEM', dataset: 'National Elevation Dataset (NED) Alaska 2 arc-second', products: ['dem'], formats: ['tif'], resolutionMeters: null, resolutionUnit: 'arc-seconds', angularResolution: 2 },
+      { id: 'usgs-contours', name: '3DEP contours', dataset: 'National Elevation Dataset (NED) 1/3 arc-second - Contours', products: ['contours'], formats: ['zip','gpkg'], resolutionMeters: null }
+    ] }
+];
+
+export function assetsFromFeatures(features, source, collection) {
+  const assets = [];
+  for (const item of features) {
+    const attributes = item.properties || item.attributes || {};
+    const shape = item.geometry?.rings ? arcgisToGeoJSON(item.geometry) : item.geometry;
+    if (!shape) continue;
+    for (const link of attributeLinks(attributes, collection.urlFields)) {
+      const extension = extensionFor(link.url);
+      if (!extension) continue;
+      const product = collection.products[0];
+      assets.push({ sourceId: source.id, collectionId: collection.id, remoteUrl: canonicalDownloadUrl(link.url), extension, product,
+        title: attributes.Tile_name || attributes.NOM_TUILE || attributes.filename || attributes.TileName || attributes.Package || item.id || collection.name,
+        bbox: parseBbox(bbox(feature(shape))), geometry: shape, resolutionMeters: attributeResolution(attributes) || collection.resolutionMeters || null,
+        densityPointsPerSquareMeter: Number(attributes.PulseDensity || attributes.PointDensity) || null,
+        revision: String(attributes.updated || attributes.last_updated || attributes.date || attributes.year || ''),
+        license: source.license, country: source.country, region: source.region, providerMetadata: attributes, delivery: collection.delivery });
+    }
+  }
+  return assets;
+}
+
+export function ontarioExports(source, query, input, config) {
+  const native = source.collections.find((collection) => collection.id === 'ontario-dtm-export')?.resolutionMeters || 0.5;
+  const resolution = ['all', 'best', 'native', undefined].includes(input.resolution) ? native : Number(input.resolution);
+  if (!(resolution > 0) || resolution > 1000) throw new HttpError(400, 'Export resolution must be a positive number no greater than 1000 m.');
+  const projected = projectExtent(query.bbox);
+  const [west, south, east, north] = projected.bbox;
+  const edge = config.maxExportPixels * resolution;
+  const columns = Math.ceil((east - west) / edge);
+  const rows = Math.ceil((north - south) / edge);
+  if (columns * rows > config.maxDiscoveryAssets) throw new HttpError(413, `This export requires ${columns * rows} tiles. Refine the boundary, select native packages, use coarser resolution, or increase MAX_DISCOVERY_ASSETS.`);
+  const output = [];
+  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
+    const tileWest = west + column * edge;
+    const tileSouth = south + row * edge;
+    const width = Math.min(config.maxExportPixels, Math.max(1, Math.ceil((east - tileWest) / resolution)));
+    const height = Math.min(config.maxExportPixels, Math.max(1, Math.ceil((north - tileSouth) / resolution)));
+    const projectedBbox = [tileWest, tileSouth, tileWest + width * resolution, tileSouth + height * resolution];
+    const url = new URL(`${imageServer}/exportImage`);
+    const interpolation = input.interpolation || 'bilinear';
+    const interpolations = { nearest: 'RSP_NearestNeighbor', bilinear: 'RSP_BilinearInterpolation', cubic: 'RSP_CubicConvolution' };
+    if (!interpolations[interpolation]) throw new HttpError(400, 'interpolation must be nearest, bilinear, or cubic.');
+    const parameters = { f: 'image', format: 'tiff', bbox: projectedBbox.join(','), bboxSR: projected.crs.split(':')[1], imageSR: projected.crs.split(':')[1],
+      size: `${width},${height}`, interpolation: interpolations[interpolation], pixelType: 'F32', noData: '-9999' };
+    if (input.rasterFunction) parameters.renderingRule = JSON.stringify({ rasterFunction: input.rasterFunction });
+    for (const [key,value] of Object.entries(parameters)) url.searchParams.set(key, value);
+    output.push({ sourceId: source.id, collectionId: 'ontario-dtm-export', title: `Ontario DTM ${row + 1}-${column + 1}`, remoteUrl: url.href,
+      product: 'dtm', extension: 'tif', mediaType: 'image/tiff', bbox: geographicExtent(projectedBbox, projected.crs),
+      resolutionMeters: native, requestedResolutionMeters: resolution, effectiveCellSizeMeters: resolution, resampled: resolution < native,
+      crs: projected.crs, width, height, license: source.license, country: 'CA', region: 'ON', delivery: 'export' });
+  }
+  return output;
+}
+
+export class SourceRegistry {
+  constructor(config, catalog, network, indexes) {
+    this.config = config; this.catalog = catalog; this.network = network; this.indexes = indexes;
+    for (const source of builtInSources) {
+      const existing = catalog.source(source.id);
+      catalog.saveSource({ ...existing, ...source, catalogStatus: existing?.catalogStatus || 'known', refreshedAt: existing?.refreshedAt || null,
+        collections: [...source.collections.map((collection) => ({ ...existing?.collections?.find((item) => item.id === collection.id), ...collection })),
+          ...(existing?.collections || []).filter((collection) => !source.collections.some((item) => item.id === collection.id))] });
+    }
+    if (!catalog.source('derived')) catalog.saveSource({ id:'derived',name:'Locally generated terrain',adapter:'local',country:'CA/US',coverageBbox:[-179.9,-89.9,179.9,89.9],
+      license:{title:'Attribution inherited from source assets',url:'https://open.canada.ca/en/open-government-licence-canada',attributionRequired:true},collections:[],catalogStatus:'local' });
+  }
+
+  list() { return this.catalog.sources().map((source) => ({ ...source, options: this.options(source) })); }
+  get(id) {
+    const aliases = { 'nrcan-pei': 'pei', usgs: 'usgs-3dep' };
+    const source = this.catalog.source(aliases[id] || id);
+    if (!source) throw new HttpError(404, `Unknown source: ${id}`);
+    return source;
+  }
+
+  scorecarderCollections(source) {
+    const native = source.collections.filter(collection => collection.delivery !== 'export');
+    const rasters = native.filter(collection => collection.products.some(product => ['dtm','dem'].includes(product)));
+    return rasters.length ? rasters : native.filter(collection => collection.products.includes('point-cloud'));
+  }
+
+  scorecarderAcquisition(id) {
+    const source = this.get(id);
+    const collections = this.scorecarderCollections(source);
+    if (!collections.length) throw new HttpError(422, 'This source has no native ground-elevation or point-cloud collection for Scorecarder.');
+    return { sourceIds: [source.id], scope: 'source', resolution: 'all',
+      products: [...new Set(collections.flatMap(collection => collection.products))].filter(product => ['dtm','dem','point-cloud'].includes(product)),
+      collectionIds: collections.map(collection => collection.id), formats: ['tif','tiff','img','zip','las','laz','copc.laz'],
+      prepareForScorecarder: true, processAfterDownload: false, allowPartial: false };
+  }
+
+  options(source) {
+    return { products: [...new Set(source.collections.flatMap((collection) => collection.products))], formats: [...new Set(source.collections.flatMap((collection) => collection.formats || []))],
+      resolutionsMeters: [...new Set(source.collections.map((collection) => collection.resolutionMeters).filter((value) => value > 0))].sort((left,right) => left-right),
+      resolutionModes: ['best','all','native'], delivery: [...new Set(source.collections.map((collection) => collection.delivery || 'tiles'))],
+      scorecarder: this.scorecarderCollections(source).length ? this.scorecarderAcquisition(source.id) : null,
+      customExportResolution: source.adapter === 'ontario', interpolation: source.adapter === 'ontario' ? ['nearest','bilinear','cubic'] : [],
+      precisionPolicy: 'Native resolution and requested output cell size are separate. Point-cloud density is not raster resolution. Unknown native precision stays unknown.', collections: source.collections };
+  }
+
+  async refresh(id, options = {}) {
+    const source = structuredClone(this.get(id));
+    if (source.adapter === 'usgs') {
+      const data = await this.network.json('https://tnmaccess.nationalmap.gov/api/v1/datasets', { signal: options.signal });
+      const categories = Array.isArray(data) ? data : data.datasets || [];
+      source.providerCatalog = categories.filter((category) => /elevation|lidar|3dep/i.test(category.title)).map((category) => ({ id: category.id, title: category.title, formats: category.formats, tags: category.tags?.map((tag) => ({ id: tag.id, name: tag.title, dataset: tag.sbDatasetTag })) }));
+      for (const category of source.providerCatalog) for (const tag of category.tags || []) {
+        if (!tag.dataset || source.collections.some((collection) => collection.dataset === tag.dataset)) continue;
+        source.collections.push({ id: tag.id, name: tag.name, dataset: tag.dataset, products: [/lidar|point cloud/i.test(tag.name) ? 'point-cloud' : /contour/i.test(tag.name) ? 'contours' : 'dem'], formats: ['tif','laz','zip','img'], resolutionMeters: null });
+      }
+    } else if (['federal','pei','quebec'].includes(source.adapter)) {
+      const data = await this.network.json(`${stacRoot}/collections`, { signal: options.signal });
+      for (const item of data.collections || []) {
+        if (!/elev|dem|lidar|terrain/i.test(item.id + ' ' + item.title)) continue;
+        const existing = source.collections.find((collection) => collection.id === item.id);
+        const description = { name: item.title || item.id, providerExtent: item.extent, summaries: item.summaries, licenseId: item.license };
+        if (existing) Object.assign(existing, description);
+        else source.collections.push({ id: item.id, products: ['dem','dtm','dsm'], formats: ['tif'], resolutionMeters: item.summaries?.gsd?.minimum || null, delivery: 'mosaics', ...description });
+      }
+    } else if (source.adapter === 'ontario') {
+      const service = await this.network.json(`${imageServer}?f=json`, { signal: options.signal });
+      source.imageService = { nativePixelSize: service.pixelSizeX, spatialReference: service.spatialReference, maxImageWidth: service.maxImageWidth, maxImageHeight: service.maxImageHeight,
+        rasterFunctions: service.rasterFunctionInfos, fields: service.fields?.map((field) => ({ name: field.name, alias: field.alias })) };
+      source.collections.find((collection) => collection.id === 'ontario-dtm-export').resolutionMeters = service.pixelSizeX || 0.5;
+    } else if (source.adapter === 'arcgis') {
+      source.layerSchemas = [];
+      for (const collection of source.collections) {
+        const service = await this.network.json(`${collection.endpoint}?f=json`, { signal: options.signal });
+        source.layerSchemas.push({ collectionId: collection.id, fields: service.fields?.map((field) => ({ name: field.name, alias: field.alias })), maxRecordCount: service.maxRecordCount });
+      }
+    }
+    source.refreshedAt = new Date().toISOString(); source.catalogStatus = 'verified';
+    this.catalog.saveSource(source);
+    return { ...source, options: this.options(source) };
+  }
+
+  async arcgisFeatures(endpoint, query, options = {}) {
+    const root = endpoint.replace(/\/query\/?$/, '').replace(/\/$/, '');
+    const parameters = { f: 'json', where: options.where || '1=1', ...(options.wholeSource ? {} : { geometryType: 'esriGeometryEnvelope', geometry: query.bbox.join(','), inSR: '4326', spatialRel: 'esriSpatialRelIntersects' }) };
+    const idsUrl = new URL(`${root}/query`);
+    for (const [key,value] of Object.entries({ ...parameters, returnIdsOnly: 'true' })) idsUrl.searchParams.set(key,value);
+    const ids = await this.network.json(idsUrl.href, { signal: options.signal });
+    if (!Array.isArray(ids.objectIds)) throw new HttpError(502, 'ArcGIS provider did not return tile IDs; no silently truncated result was accepted.');
+    if (ids.objectIds.length > this.config.maxDiscoveryAssets) throw new HttpError(413, `Index contains ${ids.objectIds.length} intersecting records, exceeding MAX_DISCOVERY_ASSETS. Refine the boundary or increase the limit.`);
+    const result = [];
+    for (let offset = 0; offset < ids.objectIds.length; offset += 500) {
+      const url = new URL(`${root}/query`);
+      const body = new URLSearchParams({ f: root.endsWith('/ImageServer') ? 'json' : 'geojson', objectIds: ids.objectIds.slice(offset, offset + 500).join(','), outFields: '*', returnGeometry: 'true', outSR: '4326' });
+      const data = await this.network.json(url.href, { signal: options.signal, method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+      if (data.exceededTransferLimit) throw new HttpError(502, 'ArcGIS truncated a tile batch. No incomplete acquisition plan was accepted.');
+      result.push(...(data.features || []).map((item) => item.attributes ? { type: 'Feature', properties: item.attributes, geometry: arcgisToGeoJSON(item.geometry) } : item));
+      options.onProgress?.(`${result.length} tile footprints read`);
+    }
+    return result;
+  }
+
+  async stacAssets(source, collection, query, options) {
+    let url = new URL(`${source.stacEndpoint || stacRoot}/search`);
+    url.searchParams.set('collections', collection.id);
+    url.searchParams.set('bbox', query.bbox.join(','));
+    url.searchParams.set('limit', '500');
+    let method = 'GET'; let body;
+    const assets = []; const visited = new Set();
+    while (url) {
+      const key = `${method}:${url.href}:${JSON.stringify(body)}`;
+      if (visited.has(key)) throw new HttpError(502, 'STAC pagination loop detected.');
+      visited.add(key);
+      const data = await this.network.json(url.href, { signal: options.signal, method, ...(body ? { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } } : {}) });
+      for (const item of data.features || []) {
+        let geometry = item.geometry;
+        if (item.assets?.extent?.href) {
+          const footprints = await this.indexes.query(source.id, { indexUrl: item.assets.extent.href }, query, { ...options, fullGeometry: true });
+          if (!footprints.some((footprint) => intersectsBoundary({ geometry: footprint.geometry }, query))) continue;
+          geometry = footprints.length === 1 ? footprints[0].geometry : union(featureCollection(footprints)).geometry;
+        }
+        for (const [name, asset] of Object.entries(item.assets || {})) {
+        if (asset.roles?.length && !asset.roles.includes('data')) continue;
+        const extension = extensionFor(asset.href, asset.type);
+        if (!extension || ['png','jpg','jpeg','geojson','gpkg'].includes(extension)) continue;
+        const product = /dsm|surface/i.test(name + ' ' + asset.title) ? 'dsm' : /dtm|terrain/i.test(name + ' ' + asset.title) ? 'dtm' : /laz|las/.test(extension) ? 'point-cloud' : 'dem';
+        const properties = item.properties || {};
+        const transform = properties['proj:transform'];
+        const projectedResolution = properties['proj:epsg'] !== 4326 && transform?.length === 6
+          ? Math.abs(Math.abs(transform[0]) > 1000 && Math.abs(transform[1]) < 1000 ? transform[1] : transform[0]) : null;
+        assets.push({ sourceId: source.id, collectionId: collection.id, remoteUrl: asset.href, extension, mediaType: asset.type, product,
+          title: `${item.id}: ${asset.title || name}`, bbox: geometry ? bbox(feature(geometry)) : item.bbox, geometry, resolutionMeters: properties.gsd || collection.resolutionMeters || projectedResolution || null,
+          crs: properties['proj:epsg'] ? `EPSG:${properties['proj:epsg']}` : null, revision: properties.updated || properties.datetime || '',
+          expectedBytes: asset['file:size'] || null, densityPointsPerSquareMeter: properties['pc:density'] || null, license: source.license, country: source.country, region: source.region,
+          delivery: 'mosaics', providerMetadata: properties });
+        }
+      }
+      if (assets.length > this.config.maxDiscoveryAssets) throw new HttpError(413, 'STAC results exceed MAX_DISCOVERY_ASSETS; refine the boundary or increase the limit.');
+      const next = data.links?.find((link) => link.rel === 'next');
+      if (next) { url = new URL(next.href, url); method = next.method || 'GET'; body = next.body; } else url = null;
+    }
+    return assets;
+  }
+
+  async usgsAssets(source, collection, query, options) {
+    const assets = []; let offset = 0;
+    while (true) {
+      const url = new URL('https://tnmaccess.nationalmap.gov/api/v1/products');
+      for (const [key,value] of Object.entries({ datasets: collection.dataset, bbox: query.bbox.join(','), max: 1000, offset, prodStatuses: 'Published' })) url.searchParams.set(key,String(value));
+      const data = await this.network.json(url.href, { signal: options.signal });
+      for (const item of data.items || []) {
+        const urls = [...new Set([item.downloadURL, ...Object.values(item.urls || {}).filter((value) => typeof value === 'string')].filter(Boolean))];
+        for (const remoteUrl of urls) {
+          const extension = extensionFor(remoteUrl);
+          if (!extension) continue;
+          assets.push({ sourceId: source.id, collectionId: collection.id, remoteUrl, extension, product: collection.products[0], title: item.title,
+            bbox: parseBbox(item.boundingBox), resolutionMeters: collection.resolutionMeters, angularResolution: collection.angularResolution || null,
+            revision: item.lastUpdated || item.publicationDate || '', expectedBytes: Number(item.sizeInBytes) || null, license: source.license, country: 'US', providerMetadata: { sourceId: item.sourceId, publicationDate: item.publicationDate } });
+        }
+      }
+      offset += (data.items || []).length;
+      if (assets.length > this.config.maxDiscoveryAssets) throw new HttpError(413, 'USGS results exceed MAX_DISCOVERY_ASSETS; refine the boundary or increase the limit.');
+      if (!data.items?.length || offset >= Number(data.total ?? offset)) break;
+    }
+    return assets;
+  }
+
+  async discover(input, options = {}) {
+    input = { ...input,resolution:input.resolution ?? 'best' };
+    const selected = input.sourceIds?.length ? input.sourceIds.map((id) => this.get(id)) : this.list().filter(source=>source.adapter!=='local');
+    if (selected.length > 32) throw new HttpError(400, 'Select no more than 32 sources per acquisition.');
+    if (input.scope !== 'source' && !input.bbox && !input.boundary) throw new HttpError(400, 'Specify bbox/boundary, or scope=source for full-source acquisition.');
+    const results = []; const warnings = []; const errors = []; const queried = [];
+    for (const source of selected) {
+      options.signal?.throwIfAborted();
+      const query = normalizeBoundary(input.scope === 'source' ? { bbox: source.coverageBbox, bufferMeters: 0 } : input, this.config.defaultBufferMeters);
+      if (!intersectsBoundary({ bbox: source.coverageBbox }, query)) continue;
+      queried.push(source.id);
+      const products = input.products?.length ? input.products : ['dtm'];
+      let collections = source.collections.filter((collection) => collection.products.some((product) => products.includes(product)));
+      if (input.collectionIds?.length) collections = collections.filter((collection) => input.collectionIds.includes(collection.id));
+      if (input.delivery && input.delivery !== 'all') collections = collections.filter((collection) => (collection.delivery || 'tiles') === input.delivery);
+      if (input.scope==='source' && source.adapter==='ontario') {
+        if (input.delivery==='export' || input.collectionIds?.includes('ontario-dtm-export')) throw new HttpError(400,'Clipped Ontario exports require an area boundary. Use native packages or point-cloud tiles for whole-source acquisition.');
+        collections=collections.filter(collection=>collection.id!=='ontario-dtm-export');
+      }
+      const preferredDelivery = !input.collectionIds?.length && !input.delivery && input.resolution !== 'all';
+      if (preferredDelivery) {
+        if (source.adapter === 'ontario' && input.scope!=='source') collections = collections.filter((collection) => collection.id !== 'ontario-dtm-packages');
+      }
+      const assets = [];
+      for (const collection of collections) {
+        let requestedProducts = collection.products.filter(product=>products.includes(product));
+        if (preferredDelivery && ((source.adapter==='pei' && collection.id!=='pei-2020-dtm-tiles') || (source.adapter==='quebec' && collection.id!=='quebec-mnt'))) requestedProducts=requestedProducts.filter(product=>product!=='dtm');
+        if (!requestedProducts.length) continue;
+        try {
+          options.onProgress?.(`Discovering ${source.name}: ${collection.name}`);
+          let discovered;
+          if (collection.id === 'ontario-dtm-export') {
+            const footprints = await this.arcgisFeatures(imageServer, query, { ...options, where: 'Category=1' });
+            discovered = footprints.length ? ontarioExports(source, query, input, this.config) : [];
+          } else if (collection.indexUrl) discovered = assetsFromFeatures(await this.indexes.query(source.id, collection, query, options), source, collection);
+          else if (collection.endpoint) discovered = assetsFromFeatures(await this.arcgisFeatures(collection.endpoint, query, { ...options, wholeSource: input.scope === 'source' }), source, collection);
+          else if (source.adapter === 'usgs') discovered = await this.usgsAssets(source, collection, query, options);
+          else discovered = await this.stacAssets(source, collection, query, options);
+          discovered = discovered.filter(asset=>requestedProducts.includes(asset.product));
+          assets.push(...discovered);
+          if (!discovered.length) warnings.push({ sourceId: source.id, collectionId: collection.id, message: 'No anonymously downloadable data found for this boundary and product.' });
+        } catch (error) {
+          if (options.signal?.aborted) throw error;
+          errors.push({ sourceId: source.id, collectionId: collection.id, message: error.message });
+        }
+      }
+      const chosen = selectAssets(assets, query, input);
+      for (const asset of chosen) {
+        this.network.validateUrl(asset.remoteUrl);
+        results.push(this.catalog.saveAsset({ ...asset, id: assetId(asset.sourceId, asset.remoteUrl, asset.revision) }));
+      }
+    }
+    const assets = [...new Map(results.map((asset) => [asset.id, asset])).values()];
+    if (assets.length > this.config.maxDiscoveryAssets) throw new HttpError(413, 'Acquisition exceeds MAX_DISCOVERY_ASSETS. No silently truncated download was queued.');
+    const availableOptions = { products: [...new Set(assets.map((asset) => asset.product))], resolutionsMeters: [...new Set(assets.map((asset) => asset.resolutionMeters).filter((value) => value > 0))].sort((left,right) => left-right), formats: [...new Set(assets.map((asset) => asset.extension))] };
+    const plan = this.catalog.savePlan({ request: input, sourceIds: queried, assetIds: assets.map((asset) => asset.id), complete: errors.length === 0, warnings, errors,
+      assetCount: assets.length, knownBytes: assets.reduce((sum,asset) => sum + (asset.expectedBytes || 0),0), unknownSizeCount: assets.filter((asset) => !asset.expectedBytes).length,
+      availableOptions, createdAt: new Date().toISOString() });
+    return { ...plan, assets };
+  }
+
+  register(input) {
+    const id = String(input.id || '').toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{1,79}$/.test(id) || this.catalog.source(id)) throw new HttpError(400, 'Use a unique source ID of 2-80 lowercase letters, digits, or hyphens.');
+    if (!['arcgis','stac','vector'].includes(input.adapter)) throw new HttpError(400, 'Custom adapter must be arcgis, stac, or vector.');
+    if (!input.name || !input.license?.title || !input.license?.url || !input.collections?.length) throw new HttpError(400, 'Name, license, and collection definitions are required.');
+    for (const collection of input.collections) {
+      if (!collection.id || !collection.products?.length) throw new HttpError(400, 'Each collection requires id and products.');
+      const url = collection.endpoint || collection.indexUrl || input.stacEndpoint;
+      this.network.validateUrl(url);
+    }
+    const source = { ...input, coverageBbox: parseBbox(input.coverageBbox), catalogStatus: 'configured', refreshedAt: null, custom: true };
+    this.catalog.saveSource(source);
+    return source;
+  }
+}

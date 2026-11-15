@@ -1,0 +1,86 @@
+import path from 'node:path';
+import os from 'node:os';
+import net from 'node:net';
+import assert from 'node:assert/strict';
+import { fileURLToPath,pathToFileURL } from 'node:url';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { randomBytes } from 'node:crypto';
+import { parseArgs } from 'node:util';
+import { mkdir,mkdtemp,readFile,writeFile,access,rm } from 'node:fs/promises';
+import { writeArrayBuffer } from 'geotiff';
+import dotenv from 'dotenv';
+
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const windows=process.platform==='win32';
+const nodeExecutable=appDir=>path.join(appDir,'runtime/node',windows?'node.exe':'bin/node');
+function run(executable,args,options={}){return new Promise((resolve,reject)=>{const child=spawn(executable,args,{cwd:root,windowsHide:true,stdio:'pipe',...options});let output='';child.stdout.on('data',data=>{output+=data;});child.stderr.on('data',data=>{output+=data;});child.once('error',reject);child.once('close',code=>code===0?resolve(output):reject(new Error(`${path.basename(executable)} exited ${code}: ${output}`)));});}
+async function freePort(){const server=net.createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;}
+async function start(appDir,envPath){
+  const child=spawn(nodeExecutable(appDir),[path.join(appDir,'src/server.js')],{cwd:appDir,env:{...process.env,TERRAIN_CONFIG_PATH:envPath},windowsHide:true,stdio:'pipe'});let output='';
+  await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error(`Packaged startup timeout: ${output}`)),30000);const consume=data=>{output+=data;if(output.includes('TerrainServer ready at')){clearTimeout(timeout);resolve();}};child.stdout.on('data',consume);child.stderr.on('data',consume);child.once('error',error=>{clearTimeout(timeout);reject(error);});child.once('exit',code=>{clearTimeout(timeout);reject(new Error(`Packaged server exited ${code}: ${output}`));});});return child;
+}
+async function stop(child){if(!child||child.exitCode!==null)return;const exited=once(child,'exit');child.kill('SIGTERM');await exited;}
+async function json(base,pathname,key){const response=await fetch(base+pathname,{headers:key?{Authorization:`Bearer ${key}`}:{},signal:AbortSignal.timeout(30000)});assert.equal(response.status,200,`${pathname}: ${await response.clone().text()}`);return response.json();}
+
+async function main(){
+  if(!['win32','linux'].includes(process.platform))throw new Error('Installer integration validation requires Windows/x64 or Linux/x64.');
+  const {values:argumentsValues}=parseArgs({options:{'gis-env':{type:'string'}}});
+  const localConfig=dotenv.parse(await readFile(path.join(root,'.env'),'utf8').catch(()=>''));
+  const gisEnv=argumentsValues['gis-env']||process.env.GIS_ENV_ROOT||localConfig.GIS_ENV_ROOT;
+  if(windows&&!gisEnv)throw new Error('Supply --gis-env or configure GIS_ENV_ROOT for a fresh installer build.');
+  console.log(`Building a fresh ${windows?'Windows':'Linux'} payload before installer integration validation.`);
+  if(windows)await run(process.execPath,[path.join(root,'scripts/build-installer.js'),'--gis-env',gisEnv]);else await run('bash',[path.join(root,'installer/linux/build.sh')]);
+  const buildDirectory=windows?path.join(root,'build'):process.env.TERRAIN_BUILD_DIR||path.join(os.homedir(),'.cache/terrainserver-builder');
+  const stage=path.join(buildDirectory,'staging',windows?'windows-x64':'linux-x64');await access(nodeExecutable(stage));
+  const {version}=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
+  const testRoot=await mkdtemp(path.join(buildDirectory,'installer-check-'));
+  const appDir=path.join(testRoot,'test program'),stateDir=path.join(testRoot,'state'),storageRoot=path.join(testRoot,'terrain files');
+  if(windows){const compiler=process.env.ISCC_PATH||path.join(process.env.LOCALAPPDATA,'Programs/Inno Setup 6/ISCC.exe');await run(compiler,['/Qp','/DVerificationBuild',`/DStageDir=${stage}`,`/DOutputDir=${testRoot}`,`/DAppVersion=${version}`,path.join(root,'installer/windows/setup.iss')]);}
+  const setup=windows?path.join(testRoot,`TerrainServer-InstallerVerification-${version}-windows-x64-setup.exe`):path.join(root,'dist',`TerrainServer-${version}-linux-x64-setup.run`);
+  const port=await freePort();const args=windows?['/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',`/DIR=${appDir}`,`/STATEDIR=${stateDir}`,`/STORAGEROOT=${storageRoot}`,`/PORT=${port}`,'/BIND=127.0.0.1',`/LOG=${path.join(testRoot,'install.log')}`]:[setup,'--no-service','--app-dir',appDir,'--state-dir',stateDir,'--storage-root',storageRoot,'--port',String(port),'--bind','127.0.0.1'];
+  const install=options=>run(windows?setup:'bash',options);
+  let child;
+  try{
+    console.log(`Installing an isolated ${windows?'current-user Windows':'Linux foreground'} verification build (no system service registration).`);
+    await install(args);
+    const httpClient=JSON.parse(await readFile(path.join(appDir,'node_modules/undici/package.json'),'utf8'));assert.equal(httpClient.version,'8.12.3','The installer must bundle the paused-parser crash fix.');
+    const installation=JSON.parse(await readFile(path.join(appDir,'installation.json'),'utf8'));assert.equal(installation.port,port);assert.equal(installation.storageRoot,storageRoot);assert.equal(installation.preserved,false);
+    const envPath=path.join(stateDir,'.env');const node=nodeExecutable(appDir);
+    if(!windows)await run('systemd-analyze',['verify',path.join(appDir,'terrainserver.service')],{env:{...process.env,SYSTEMD_UNIT_PATH:`${appDir}:/lib/systemd/system:/usr/lib/systemd/system`}});
+    const bytes=Buffer.from(writeArrayBuffer(Array.from({length:100},()=>100),{width:10,height:10,BitsPerSample:[8],SampleFormat:[1],ModelPixelScale:[0.001,0.001,0],ModelTiepoint:[0,0,0,-79.5,43.6,0],GeographicTypeGeoKey:4326,GTModelTypeGeoKey:2,GTRasterTypeGeoKey:1}));
+    const filename=path.join(storageRoot,'fixture.tif');await writeFile(filename,bytes);
+    const seed=`import {Catalog} from ${JSON.stringify(pathToFileURL(path.join(appDir,'src/catalog.js')).href)};const catalog=new Catalog(${JSON.stringify(installation.catalogPath)});const asset=catalog.saveAsset({sourceId:'ontario',title:'Installer fixture',product:'dtm',extension:'tif',path:${JSON.stringify(filename)},bbox:[-79.5,43.59,-79.49,43.6],resolutionMeters:1,bytes:${bytes.length},sha256:'fixture-hash'});catalog.saveAsset({...asset,id:undefined,sourceId:'derived',product:'hillshade',url:'https://example.gov/visualization.tif',title:'Visualization fixture'});console.log(asset.id);catalog.close();`;
+    const seeded=await run(node,['--input-type=module','-e',seed],{cwd:appDir});const assetId=seeded.match(/^[a-f0-9]{32}$/m)?.[0];assert.ok(assetId,seeded);
+    child=await start(appDir,envPath);const base=`http://127.0.0.1:${port}`;
+    assert.equal((await json(base,'/api/health')).status,'ok');const tools=await json(base,'/api/tools');assert.ok(tools.rasterReady&&tools.pointCloudReady);
+    const sources=(await json(base,'/api/sources')).sources.filter(source=>source.adapter!=='local');assert.equal(sources.length,9);assert.ok(sources.every(source=>source.options.scorecarder?.prepareForScorecarder&&source.options.scorecarder.scope==='source'));
+    assert.ok((await json(base,'/api/openapi.json')).paths['/api/sources/{id}/acquire']?.post);
+    const elevation=await json(base,'/api/terrain/elevation?longitude=-79.4995&latitude=43.5995');assert.equal(elevation.points[0].elevation,100);
+    const grid=await json(base,`/api/terrain/grid?assetId=${assetId}&width=16&height=16`);assert.equal(grid.values.length,256);
+    const manifest=await json(base,'/api/scorecarder/manifest?bbox=-79.5,43.59,-79.49,43.6');assert.deepEqual(manifest.assets.map(asset=>asset.product),['dtm']);
+    assert.equal((await json(base,'/api/scorecarder/stac/search?bbox=-79.5,43.59,-79.49,43.6')).features.length,1);assert.equal((await json(base,'/api/stac/search?bbox=-79.5,43.59,-79.49,43.6')).features.length,2);
+    const range=await fetch(`${base}/api/assets/${assetId}/download.tif`,{headers:{Range:'bytes=0-7'}});assert.equal(range.status,206);assert.equal((await range.arrayBuffer()).byteLength,8);
+    await stop(child);child=null;
+    const gis=path.join(appDir,'runtime/gis'),bin=path.join(gis,windows?'Library/bin':'bin'),share=windows?'Library/share':'share';const env={...process.env,PATH:(windows?[bin,gis,path.join(process.env.SystemRoot,'System32')]:[bin,'/usr/bin','/bin']).join(path.delimiter),...(!windows?{LD_LIBRARY_PATH:path.join(gis,'lib')}:{}),GDAL_DATA:path.join(gis,share,'gdal'),PROJ_DATA:path.join(gis,share,'proj'),PROJ_LIB:path.join(gis,share,'proj'),PROJ_NETWORK:'OFF'};
+    const csv=path.join(stateDir,'points.csv'),cloud=path.join(storageRoot,'fixture.laz');await writeFile(csv,'X,Y,Z,Classification\n620000,4840000,100,2\n620000.5,4840000,101,2\n620000,4840000.5,102,2\n620000.5,4840000.5,103,2\n620000.25,4840000.25,110,5\n');
+    const pipelineFile=path.join(stateDir,'pipeline.json');await writeFile(pipelineFile,JSON.stringify({pipeline:[{type:'readers.text',filename:csv},{type:'writers.las',filename:cloud,compression:'laszip',a_srs:'EPSG:32617',minor_version:4}]}));
+    await run(path.join(bin,windows?'pdal.exe':'pdal'),['pipeline',pipelineFile],{env});await run(path.join(bin,windows?'pdal.exe':'pdal'),['info','--summary',cloud],{env});
+    await run(path.join(bin,windows?'gdal_translate.exe':'gdal_translate'),['-of','GTiff',filename,path.join(storageRoot,'converted.tif')],{env});
+    const image=path.join(storageRoot,'native.img');await run(path.join(bin,windows?'gdal_translate.exe':'gdal_translate'),['-of','HFA',filename,image],{env});
+    const prepare=`import assert from 'node:assert/strict';import {stat} from 'node:fs/promises';import {loadConfig} from ${JSON.stringify(pathToFileURL(path.join(appDir,'src/config.js')).href)};import {Catalog} from ${JSON.stringify(pathToFileURL(path.join(appDir,'src/catalog.js')).href)};import {Gis} from ${JSON.stringify(pathToFileURL(path.join(appDir,'src/gis.js')).href)};import {TerrainProcessor} from ${JSON.stringify(pathToFileURL(path.join(appDir,'src/processing.js')).href)};const config=loadConfig({envPath:${JSON.stringify(envPath)}});const catalog=new Catalog(config.catalogPath);try{const raw=catalog.saveAsset({sourceId:'ontario',title:'Native IMG fixture',product:'dtm',extension:'img',path:${JSON.stringify(image)},bbox:[-79.5,43.59,-79.49,43.6],resolutionMeters:1,bytes:(await stat(${JSON.stringify(image)})).size});const processor=new TerrainProcessor(config,catalog,new Gis(config));const ids=await processor.prepareForScorecarder([raw.id],{id:'installer-native-preparation',signal:new AbortController().signal});assert.equal(ids.length,1);const asset=catalog.asset(ids[0]);assert.equal(asset.extension,'tif');assert.equal(asset.parentAssetId,raw.id);assert.deepEqual(asset.pixelSize,[0.001,0.001]);assert.ok(asset.path.startsWith(${JSON.stringify(storageRoot)}));}finally{catalog.close();}`;
+    await run(node,['--input-type=module','-e',prepare],{cwd:appDir});
+    console.log('Packaged Node/SQLite/Sharp, GDAL/PDAL, Scorecarder presets, native IMG preparation, LAZ generation, elevation, grids, and Range downloads passed.');
+    const customPort=await freePort(),key=randomBytes(32).toString('hex');const values=dotenv.parse(await readFile(envPath,'utf8'));values.PORT=String(customPort);values.API_KEY=key;values.CUSTOM_SETTING='preserve me';
+    await writeFile(envPath,Object.entries(values).map(([name,value])=>`${name}=${JSON.stringify(value)}`).join('\n')+'\n');
+    const upgradeArgs=windows?[...args.filter(value=>!value.startsWith('/PORT=')&&!value.startsWith('/LOG=')),'/PORT=3123',`/LOG=${path.join(testRoot,'upgrade.log')}`]:args.map((value,index)=>args[index-1]==='--port'?'3123':value);await install(upgradeArgs);
+    const upgraded=dotenv.parse(await readFile(envPath,'utf8'));assert.equal(upgraded.PORT,String(customPort));assert.equal(upgraded.API_KEY,key);assert.equal(upgraded.CUSTOM_SETTING,'preserve me');assert.deepEqual(await readFile(filename),bytes);
+    child=await start(appDir,envPath);const nextBase=`http://127.0.0.1:${customPort}`;assert.equal((await fetch(nextBase+'/api/settings')).status,401);assert.equal((await json(nextBase,'/api/settings',key)).storageRoot,storageRoot);assert.equal((await json(nextBase,'/api/terrain/elevation?longitude=-79.4995&latitude=43.5995',key)).points[0].elevation,100);await stop(child);child=null;
+    if(windows)await run(path.join(appDir,'unins000.exe'),['/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',`/LOG=${path.join(testRoot,'uninstall.log')}`]);else await run('bash',[path.join(appDir,'installer/linux/uninstall.sh'),'--no-service']);
+    assert.equal(await access(path.join(appDir,'src/server.js')).then(()=>true,()=>false),false);assert.equal(await access(envPath).then(()=>true,()=>false),true);assert.deepEqual(await readFile(filename),bytes);await access(installation.catalogPath);
+    console.log('Real setup upgrade preserves port, API key, custom settings, catalog, and raw files; uninstall preserves persistent state and terrain data.');
+    if(windows){const registry="HKCU:\\Software\\TerrainServerInstallerVerification";await run('powershell.exe',['-NoProfile','-Command',`$key='${registry}';if((Get-ItemPropertyValue -LiteralPath $key -Name StateDirectory -ErrorAction SilentlyContinue) -eq '${stateDir.replaceAll("'","''")}'){Remove-ItemProperty -LiteralPath $key -Name StateDirectory -ErrorAction SilentlyContinue}`]);}
+    await rm(testRoot,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }catch(error){console.error(`Installer test artifacts retained for diagnosis: ${testRoot}`);throw error;}finally{await stop(child);}
+}
+main().catch(error=>{console.error(error.stack);process.exitCode=1;});

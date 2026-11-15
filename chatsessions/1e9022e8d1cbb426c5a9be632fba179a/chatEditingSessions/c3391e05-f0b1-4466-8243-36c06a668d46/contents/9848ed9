@@ -1,0 +1,115 @@
+import { realpath, stat } from 'node:fs/promises';
+import { fromFile } from 'geotiff';
+import proj4 from 'proj4';
+import sharp from 'sharp';
+import { isContained } from './config.js';
+import { HttpError, parseBbox, normalizeBoundary, intersectsBoundary } from './spatial.js';
+import './gis.js';
+
+export class TerrainReader {
+  constructor(catalog, gis) { this.catalog = catalog; this.gis = gis; }
+
+  async pathFor(asset) {
+    if (!asset?.downloaded) throw new HttpError(404, 'Asset is not available locally. Acquire it before querying terrain.');
+    const roots = await Promise.all(this.catalog.roots().map((root) => realpath(root).catch(() => null)));
+    const candidates = [asset.path, ...this.catalog.locations(asset.id).map((location) => location.path)].filter(Boolean);
+    for (const candidate of [...new Set(candidates)]) {
+      const resolved = await realpath(candidate).catch((error) => { if (['ENOENT','ENOTDIR'].includes(error.code)) return null; throw error; });
+      if (resolved && roots.some((root) => root && isContained(root,resolved)) && (await stat(resolved)).isFile()) return resolved;
+    }
+    throw new HttpError(404, 'The local file is missing, its storage volume is disconnected, or its path is outside registered storage roots. No public-service fallback is used.');
+  }
+
+  async crsFor(image, asset) {
+    const keys = image.getGeoKeys();
+    const code = keys.ProjectedCSTypeGeoKey && keys.ProjectedCSTypeGeoKey !== 32767 ? keys.ProjectedCSTypeGeoKey
+      : keys.GeographicTypeGeoKey && keys.GeographicTypeGeoKey !== 32767 ? keys.GeographicTypeGeoKey : null;
+    const crs = code ? `EPSG:${code}` : asset.crs;
+    if (!crs) throw new HttpError(422, 'Raster has no recognized spatial reference. Process it with GDAL before elevation sampling.');
+    if (!proj4.defs(crs)) {
+      const result = await this.gis.run('gdalsrsinfo',['-o','proj4',crs],{timeoutMs:20000});
+      const definition = result.stdout.trim().replace(/^'|'$/g,'').trim();
+      if (!definition.startsWith('+proj')) throw new HttpError(422,'Raster projection could not be resolved offline.');
+      proj4.defs(crs,definition);
+    }
+    return crs;
+  }
+
+  valid(value,nodata) {
+    return Number.isFinite(value) && Math.abs(value)<1e20 && (nodata == null || Math.abs(value-nodata)>Math.max(1e-8,Math.abs(nodata)*1e-7));
+  }
+
+  async sample(asset,points) {
+    const filename = await this.pathFor(asset); const tiff = await fromFile(filename);
+    try {
+      const image = await tiff.getImage(); const crs = await this.crsFor(image,asset); const origin=image.getOrigin(); const resolution=image.getResolution();
+      const values=[];
+      for(const point of points) {
+        const coordinate=proj4('EPSG:4326',crs,point); const column=Math.floor((coordinate[0]-origin[0])/resolution[0]); const row=Math.floor((coordinate[1]-origin[1])/resolution[1]);
+        if(column<0 || row<0 || column>=image.getWidth() || row>=image.getHeight()){values.push(null);continue;}
+        const raster=await image.readRasters({window:[column,row,column+1,row+1],samples:[0],interleave:true});
+        values.push(this.valid(raster[0],image.getGDALNoData())?Number(raster[0]):null);
+      }
+      return values;
+    }finally{await tiff.close();}
+  }
+
+  async elevations(points,options={}) {
+    if(!Array.isArray(points) || !points.length || points.length>1000 || points.some(point=>!Array.isArray(point)||point.length!==2||!point.every(Number.isFinite)||Math.abs(point[0])>180||Math.abs(point[1])>90)) throw new HttpError(400,'Provide 1-1000 [longitude,latitude] points in WGS84.');
+    let assets=options.assetId ? [this.catalog.asset(options.assetId)] : this.catalog.queryAssets({localOnly:true,sourceIds:options.sourceIds,courseId:options.courseId,products:['dtm','dem'],resolution:'all'});
+    assets=assets.filter(asset=>asset?.downloaded&&['tif','tiff'].includes(asset.extension)).sort((left,right)=>(left.effectiveCellSizeMeters||left.resolutionMeters||1000)-(right.effectiveCellSizeMeters||right.resolutionMeters||1000)
+      ||String(right.providerMetadata?.datetime||right.generatedAt||'').localeCompare(String(left.providerMetadata?.datetime||left.generatedAt||'')));
+    const output=points.map(point=>({longitude:point[0],latitude:point[1],elevation:null,assetId:null,units:null}));
+    for(const asset of assets) {
+      const remaining=output.map((item,index)=>item.elevation===null ? index : -1).filter(index=>index>=0);
+      if(!remaining.length)break;
+      const candidates=remaining.filter(index=>points[index][0]>=asset.bbox[0]&&points[index][0]<=asset.bbox[2]&&points[index][1]>=asset.bbox[1]&&points[index][1]<=asset.bbox[3]);
+      if(!candidates.length)continue;
+      const values=await this.sample(asset,candidates.map(index=>points[index]));
+      candidates.forEach((index,position)=>{if(values[position]!=null)Object.assign(output[index],{elevation:values[position],assetId:asset.id,sourceId:asset.sourceId,
+        units:asset.verticalUnits||asset.elevationUnits||'source units',resolutionMeters:asset.effectiveCellSizeMeters||asset.resolutionMeters,verticalDatum:asset.verticalDatum||'As published'});});
+    }
+    return {points:output,localOnly:true};
+  }
+
+  async grid(asset,input={}) {
+    if(!asset || !['tif','tiff'].includes(asset.extension))throw new HttpError(400,'Select a local GeoTIFF raster asset.');
+    const width=Math.trunc(Number(input.width||256));const height=Math.trunc(Number(input.height||256));
+    if(width<2||height<2||width>512||height>512)throw new HttpError(400,'Grid width and height must be between 2 and 512.');
+    const extent=parseBbox(input.bbox||asset.bbox);const tiff=await fromFile(await this.pathFor(asset));
+    try {
+      const image=await tiff.getImage();const crs=await this.crsFor(image,asset);const origin=image.getOrigin();const pixel=image.getResolution();
+      const corners=[[extent[0],extent[1]],[extent[2],extent[1]],[extent[2],extent[3]],[extent[0],extent[3]]].map(point=>proj4('EPSG:4326',crs,point));
+      const columns=corners.map(point=>(point[0]-origin[0])/pixel[0]);const rows=corners.map(point=>(point[1]-origin[1])/pixel[1]);
+      const left=Math.max(0,Math.floor(Math.min(...columns))-1);const top=Math.max(0,Math.floor(Math.min(...rows))-1);
+      const right=Math.min(image.getWidth(),Math.ceil(Math.max(...columns))+1);const bottom=Math.min(image.getHeight(),Math.ceil(Math.max(...rows))+1);
+      if(right<=left||bottom<=top)throw new HttpError(404,'Requested boundary does not overlap this local raster.');
+      const readWidth=Math.min(right-left,width*2);const readHeight=Math.min(bottom-top,height*2);
+      const raster=await image.readRasters({window:[left,top,right,bottom],width:readWidth,height:readHeight,samples:[0],interleave:true,resampleMethod:'nearest'});
+      const values=[];let minimum=Infinity;let maximum=-Infinity;
+      for(let row=0;row<height;row++)for(let column=0;column<width;column++) {
+        const longitude=extent[0]+column*(extent[2]-extent[0])/(width-1);const latitude=extent[3]-row*(extent[3]-extent[1])/(height-1);
+        const point=proj4('EPSG:4326',crs,[longitude,latitude]);const sourceColumn=(point[0]-origin[0])/pixel[0];const sourceRow=(point[1]-origin[1])/pixel[1];
+        const sampleColumn=Math.floor((sourceColumn-left)*readWidth/(right-left));const sampleRow=Math.floor((sourceRow-top)*readHeight/(bottom-top));
+        const raw=sampleColumn>=0&&sampleColumn<readWidth&&sampleRow>=0&&sampleRow<readHeight ? raster[sampleRow*readWidth+sampleColumn] : null;
+        const value=raw!=null&&this.valid(raw,image.getGDALNoData()) ? Number(raw) : null;
+        values.push(value);if(value!=null){minimum=Math.min(minimum,value);maximum=Math.max(maximum,value);}
+      }
+      return {assetId:asset.id,width,height,bbox:extent,crs:'EPSG:4326',sourceCrs:crs,rowOrder:'north-to-south',values,min:Number.isFinite(minimum)?minimum:null,max:Number.isFinite(maximum)?maximum:null,
+        nativeResolutionMeters:asset.nativeResolutionMeters||asset.resolutionMeters,outputCellSizeMeters:asset.effectiveCellSizeMeters||asset.resolutionMeters,units:asset.verticalUnits||asset.elevationUnits||'source units',localOnly:true};
+    }finally{await tiff.close();}
+  }
+
+  async preview(asset,input={}) {
+    const grid=await this.grid(asset,{...input,width:Math.min(512,Number(input.width)||256),height:Math.min(512,Number(input.height)||256)});
+    const rgba=Buffer.alloc(grid.width*grid.height*4);const range=Math.max(0.01,(grid.max||0)-(grid.min||0));
+    for(let index=0;index<grid.values.length;index++) {
+      const value=grid.values[index];if(value==null)continue;const level=Math.max(0,Math.min(1,(value-grid.min)/range));
+      const offset=index*4;
+      if(asset.product==='hillshade'){rgba[offset]=rgba[offset+1]=rgba[offset+2]=Math.round(Math.max(0,Math.min(255,value)));}
+      else{rgba[offset]=Math.round(66+level*166);rgba[offset+1]=Math.round(117+level*89);rgba[offset+2]=Math.round(97+level*73);}
+      rgba[offset+3]=255;
+    }
+    return sharp(rgba,{raw:{width:grid.width,height:grid.height,channels:4}}).png().toBuffer();
+  }
+}

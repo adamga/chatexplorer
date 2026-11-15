@@ -1,0 +1,101 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdtemp, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { Network, publicAddress } from '../src/network.js';
+
+test('a provider closing a backpressured response cannot crash the service process', async () => {
+  const script = `
+    import assert from 'node:assert/strict';
+    import { createServer } from 'node:net';
+    import { mkdtemp, rm } from 'node:fs/promises';
+    import path from 'node:path';
+    import os from 'node:os';
+    import { Network } from ${JSON.stringify(new URL('../src/network.js', import.meta.url).href)};
+    const root = await mkdtemp(path.join(os.tmpdir(), 'terrain-connection-close-'));
+    const content = Buffer.concat([Buffer.from('PK'), Buffer.alloc(256 * 1024, 7)]);
+    const server = createServer(socket => {
+      socket.once('data', () => socket.end(Buffer.concat([Buffer.from('HTTP/1.1 200 OK\\r\\nConnection: close\\r\\nContent-Type: application/zip\\r\\nETag: "close-fixture"\\r\\n\\r\\n'), content])));
+      socket.on('error', () => {});
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const network = new Network({ allowPrivateDownloadHosts: true, downloadRetries: 0, requestTimeoutMs: 5000, downloadIdleTimeoutMs: 5000, minFreeDiskGb: 0 });
+    try {
+      for (let index = 0; index < 8; index++) {
+        const result = await network.download('http://127.0.0.1:' + server.address().port + '/native.zip', path.join(root, 'native-' + index + '.zip'), { extension: 'zip' });
+        assert.equal(result.bytes, content.length);
+      }
+    } finally { await network.close(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }); }
+  `;
+  await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 20000 });
+});
+
+test('download security rejects private hosts, credentials, and unsupported protocols', () => {
+  const network = new Network({ allowPrivateDownloadHosts: false, extraDownloadHosts: [] });
+  try {
+    assert.throws(() => network.validateUrl('http://127.0.0.1/file'), /Private/);
+    assert.throws(() => network.validateUrl('https://user:password@example.gov/file'), /credentials/);
+    assert.throws(() => network.validateUrl('file:///C:/Windows/test'), /HTTP/);
+    assert.throws(() => network.validateUrl('https://untrusted.example/file'), /not allowed/);
+    assert.equal(publicAddress('::ffff:127.0.0.1'), false);
+    assert.equal(publicAddress('169.254.169.254'), false);
+    assert.equal(publicAddress('8.8.8.8'), true);
+  } finally { network.close(); }
+});
+
+test('streams downloads, resumes with If-Range, checks signatures, and never overwrites raw data', async () => {
+  const content = Buffer.concat([Buffer.from([73,73,42,0,8,0,0,0]), Buffer.alloc(65536, 7)]);
+  let rangeSeen;
+  const server = createServer((request, response) => {
+    if (request.url === '/redirect') { response.writeHead(302, { Location: '/tile.tif' }); response.end(); return; }
+    if (request.url === '/html') { response.writeHead(200, { 'Content-Type': 'text/html' }); response.end('<html>Error</html>'); return; }
+    const offset = Number(/^bytes=(\d+)-$/.exec(request.headers.range || '')?.[1] || 0);
+    if (offset) rangeSeen = { offset, validator: request.headers['if-range'] };
+    response.writeHead(offset ? 206 : 200, { 'Content-Type': 'image/tiff', ETag: '"v1"', 'Content-Length': content.length - offset,
+      ...(offset ? { 'Content-Range': `bytes ${offset}-${content.length - 1}/${content.length}` } : {}) });
+    response.end(content.subarray(offset));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'terrain-download-'));
+  const network = new Network({ allowPrivateDownloadHosts: true, downloadRetries: 0, requestTimeoutMs: 5000, downloadIdleTimeoutMs: 5000, minFreeDiskGb: 0 });
+  const url = `http://127.0.0.1:${server.address().port}/tile.tif`;
+  try {
+    const destination = path.join(root, 'tile.tif');
+    await writeFile(`${destination}.part`, content.subarray(0, 1024));
+    await writeFile(`${destination}.part.json`, JSON.stringify({ url, etag: '"v1"' }));
+    const result = await network.download(url, destination, { extension: 'tif' });
+    assert.deepEqual(rangeSeen, { offset: 1024, validator: '"v1"' });
+    assert.equal(result.bytes, content.length);
+    assert.equal(result.sha256, createHash('sha256').update(content).digest('hex'));
+    assert.deepEqual(await readFile(destination), content);
+    assert.equal((await network.download(url, destination)).reused, true);
+    const redirect = await network.download(url.replace('/tile.tif', '/redirect'), path.join(root, 'redirect.tif'), { extension: 'tif' });
+    assert.equal(redirect.bytes, content.length);
+    await assert.rejects(network.download(url.replace('/tile.tif', '/html'), path.join(root, 'bad.tif'), { extension: 'tif' }), /HTML/);
+  } finally { await network.close(); await new Promise((resolve) => server.close(resolve)); await rm(root, { recursive: true, force: true }); }
+});
+
+test('region retries reuse completed files, recover full partials locally, and range-resume incomplete ones', async () => {
+  const content=Buffer.concat([Buffer.from([73,73,42,0,8,0,0,0]),Buffer.alloc(65536,7)]);const checksum=createHash('sha256').update(content).digest('hex');let requests=0;let resumedOffset;
+  const server=createServer((request,response)=>{
+    requests++;const offset=Number(/^bytes=(\d+)-$/.exec(request.headers.range||'')?.[1]||0);if(offset)resumedOffset=offset;
+    response.writeHead(offset?206:200,{'Content-Type':'image/tiff',ETag:'"complete"','Content-Length':content.length-offset,...(offset?{'Content-Range':`bytes ${offset}-${content.length-1}/${content.length}`}:{})});response.end(content.subarray(offset));
+  });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-reuse-'));const network=new Network({allowPrivateDownloadHosts:true,downloadRetries:0,requestTimeoutMs:5000,downloadIdleTimeoutMs:5000,minFreeDiskGb:0});const url=`http://127.0.0.1:${server.address().port}/native.tif`;
+  try {
+    const destination=path.join(root,'native.tif');const first=await network.download(url,destination,{extension:'tif',sha256:checksum});
+    const cached={downloaded:true,path:destination,bytes:first.bytes,sha256:first.sha256,etag:first.etag,localFile:{mtimeMs:first.mtimeMs}};
+    const reused=await network.download(url,destination,{extension:'tif',cachedAsset:cached,sha256:checksum});assert.equal(reused.reused,true);assert.equal(reused.etag,'"complete"');assert.equal(requests,1);
+    const full=path.join(root,'fully-received.tif');await writeFile(`${full}.part`,content);await writeFile(`${full}.part.json`,JSON.stringify({url,etag:'"complete"',total:content.length}));
+    const recovered=await network.download(url,full,{extension:'tif',sha256:checksum});assert.equal(recovered.recovered,true);assert.equal(recovered.reused,true);assert.equal(requests,1);assert.deepEqual(await readFile(full),content);
+    const partial=path.join(root,'interrupted.tif');await writeFile(`${partial}.part`,content.subarray(0,4096));await writeFile(`${partial}.part.json`,JSON.stringify({url,etag:'"complete"',total:content.length}));
+    const resumed=await network.download(url,partial,{extension:'tif',sha256:checksum});assert.equal(resumed.resumedBytes,4096);assert.equal(resumedOffset,4096);assert.equal(requests,2);assert.deepEqual(await readFile(partial),content);
+    const changed=Buffer.from(content);changed[20]=99;await writeFile(destination,changed);const future=new Date((await stat(destination)).mtimeMs+60000);await utimes(destination,future,future);
+    await assert.rejects(network.download(url,destination,{extension:'tif',cachedAsset:cached}),/recorded checksum/);assert.equal(requests,2);assert.deepEqual(await readFile(destination),changed);
+  }finally{await network.close();await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});}
+});

@@ -1,0 +1,84 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { mkdtemp,rm,readFile,writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { Catalog } from '../src/catalog.js';
+import { Network } from '../src/network.js';
+import { JobManager } from '../src/jobs.js';
+import { pointCloudPipeline,TerrainProcessor } from '../src/processing.js';
+import { loadConfig } from '../src/config.js';
+import { Gis,geographicExtent } from '../src/gis.js';
+import { fromFile } from 'geotiff';
+
+test('durable download jobs publish to the selected root and link courses',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-job-'));
+  const content=Buffer.concat([Buffer.from('LASF'),Buffer.alloc(4096)]);
+  let downloads=0;const server=createServer((request,response)=>{downloads++;response.writeHead(200,{'Content-Length':content.length,ETag:'"fixture"'});response.end(content);});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const catalog=new Catalog(':memory:');
+  const config={storageRoot:root,downloadConcurrency:2,downloadRetries:0,downloadIdleTimeoutMs:5000,requestTimeoutMs:5000,minFreeDiskGb:0,allowPrivateDownloadHosts:true};
+  const network=new Network(config);const manager=new JobManager(config,catalog,network,{},{});
+  try{
+    const course=catalog.saveCourse({id:'test-course',name:'Test Course',country:'CA',province:'ON',bbox:[-80,43,-79,44]});
+    const asset=catalog.saveAsset({sourceId:'test',product:'point-cloud',extension:'laz',bbox:course.bbox,remoteUrl:`http://127.0.0.1:${server.address().port}/tile.laz`});
+    const settled=once(manager,'settled');const job=manager.enqueue('download',{assetIds:[asset.id],courseId:course.id});
+    await settled;assert.equal(catalog.job(job.id).status,'completed');
+    const saved=catalog.asset(asset.id);assert.ok(saved.path.startsWith(root));assert.equal(saved.etag,'"fixture"');assert.deepEqual(await readFile(saved.path),content);
+    assert.equal(catalog.course(course.id).assetCount,1);
+    const secondRoot=path.join(root,'second');const second=once(manager,'settled');const copied=manager.enqueue('download',{assetIds:[asset.id],courseId:course.id,storageRoot:secondRoot});
+    await second;assert.equal(catalog.job(copied.id).status,'completed');assert.equal(catalog.locations(asset.id).length,2);assert.deepEqual(await readFile(saved.path),content);
+    assert.equal(downloads,1);assert.equal(catalog.job(copied.id).progress.result.reused,1);assert.equal(catalog.job(copied.id).progress.result.bytes,0);
+    await rm(catalog.asset(asset.id).path);const alternate=once(manager,'settled');const recoveredCopy=manager.enqueue('download',{assetIds:[asset.id],courseId:course.id,storageRoot:secondRoot});await alternate;
+    assert.equal(catalog.job(recoveredCopy.id).status,'completed');assert.equal(downloads,1);assert.deepEqual(await readFile(catalog.asset(asset.id).path),content);
+    await manager.stop();
+    const plan=catalog.savePlan({request:{sourceIds:['test'],scope:'source'},sourceIds:['test'],assetIds:[asset.id],assetCount:1,complete:true,warnings:[],errors:[]});
+    const interrupted=catalog.createJob('acquire',{sourceIds:['test'],scope:'source',storageRoot:root,prepareForScorecarder:true});catalog.updateJob(interrupted.id,{status:'running',progress:{planId:plan.id}});
+    const resumed=new JobManager(config,catalog,network,{async discover(){throw new Error('A saved complete plan must resume without rediscovery.');}},{async prepareForScorecarder(ids){return ids;}});
+    try {
+      const finished=once(resumed,'settled');resumed.wake();await finished;
+      const recovered=catalog.job(interrupted.id);assert.equal(recovered.status,'completed',recovered.error);assert.equal(recovered.error,null);assert.equal(recovered.progress.result.scorecarder.readyAssets,1);assert.equal(recovered.progress.result.planId,plan.id);
+    }finally{await resumed.stop();}
+  }finally{await manager.stop();await network.close();catalog.close();await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});}
+});
+
+test('PDAL pipeline merges all input streams and distinguishes ground from surface',()=>{
+  const options={resolutionMeters:0.5};const extent=[-79.5,43.5,-79.49,43.51];
+  const ground=pointCloudPipeline(['a.laz','b.laz'],extent,'dtm.tif',options).pipeline;
+  assert.deepEqual(ground.find(stage=>stage.type==='filters.merge').inputs,['projected_0','projected_1']);
+  assert.equal(ground.find(stage=>stage.type==='filters.expression').expression,'Classification == 2');
+  const surface=pointCloudPipeline(['a.laz'],extent,'dsm.tif',{...options,surface:'dsm'}).pipeline;
+  assert.equal(surface.at(-1).output_type,'max');assert.match(surface.find(stage=>stage.type==='filters.expression').expression,/!= 7/);
+});
+
+test('real PDAL/GDAL builds ground, canopy, WGS84 contours, hillshade, and slope',async(context)=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-gis-'));
+  const config=loadConfig({storageRoot:root,maxProcessingPixels:1000000});const gis=new Gis(config);const catalog=new Catalog(':memory:');
+  try{
+    const tools=await gis.check();if(!tools.pointCloudReady){context.skip('GDAL/PDAL paths are not available on this machine.');return;}
+    const rows=['X,Y,Z,Classification'];
+    for(let row=0;row<12;row++)for(let column=0;column<12;column++){
+      const longitude=619380+column*2;const latitude=4832970+row*2;const ground=100+column*0.4+row*0.2;
+      rows.push(`${longitude},${latitude},${ground},2`,`${longitude},${latitude},${ground+12},5`);
+    }
+    const csv=path.join(root,'points.csv');const laz=path.join(root,'points.laz');const pipelineFile=path.join(root,'fixture-pipeline.json');
+    await writeFile(csv,rows.join('\n'));
+    await writeFile(pipelineFile,JSON.stringify({pipeline:[{type:'readers.text',filename:csv,separator:','},{type:'writers.las',filename:laz,a_srs:'EPSG:32617',compression:true}]}));
+    await gis.run('pdal',['pipeline',pipelineFile]);
+    const extent=geographicExtent([619379,4832969,619404,4832994],'EPSG:32617');
+    const course=catalog.saveCourse({id:'classified-fixture',name:'Classified Fixture',country:'CA',province:'ON',bbox:extent,bufferMeters:0});
+    const asset=catalog.saveAsset({sourceId:'fixture',product:'point-cloud',extension:'laz',path:laz,bbox:extent,country:'CA',region:'ON'});
+    const processor=new TerrainProcessor(config,catalog,gis);
+    const output=await processor.process({courseId:course.id,assetIds:[asset.id],preferPointCloud:false,resolutionMeters:1,bufferMeters:0,contourIntervals:[0.5,1,2]},
+      {id:'fixture-processing',signal:new AbortController().signal});
+    const products=output.assetIds.map(id=>catalog.asset(id));assert.equal(products.length,7);
+    const elevations=async(product)=>{const tiff=await fromFile(products.find(asset=>asset.product===product).path);try{const image=await tiff.getImage();const values=await image.readRasters({samples:[0],interleave:true});return Array.from(values).filter(value=>Number.isFinite(value)&&value!==image.getGDALNoData());}finally{await tiff.close();}};
+    const ground=await elevations('dtm');const canopy=await elevations('dsm');assert.ok(ground.length>0&&canopy.length>0);
+    assert.ok(Math.max(...ground)<109);assert.ok(Math.min(...canopy)>111);
+    const contours=JSON.parse(await readFile(products.find(asset=>asset.product==='contours').path,'utf8'));assert.ok(contours.features.length>0);
+    const point=contours.features[0].geometry.coordinates[0];assert.ok(Math.abs(point[0])<=180&&Math.abs(point[1])<=90);
+    assert.ok(catalog.course(course.id).assetCount>=7);
+  }finally{catalog.close();await rm(root,{recursive:true,force:true});}
+});

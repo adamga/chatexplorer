@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#16231a"/><stop offset="1" stop-color="#050a07"/></linearGradient>
+    <linearGradient id="lime" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e4ffc9"/><stop offset="1" stop-color="#8fd65a"/></linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.55"><stop offset="0" stop-color="#c5f49d" stop-opacity="0.35"/><stop offset="1" stop-color="#c5f49d" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#glow)"/>
+  <rect x="17.5" y="17.5" width="477" height="477" rx="110.5" fill="none" stroke="#c5f49d" stroke-opacity="0.22" stroke-width="3"/>
+  <ellipse cx="256" cy="256" rx="170" ry="68" fill="none" stroke="#c5f49d" stroke-opacity="0.35" stroke-width="10" transform="rotate(-28 256 256)"/>
+  <path d="M150 168h212a42 42 0 0 1 42 42v92a42 42 0 0 1-42 42H252l-62 50v-50h-40a42 42 0 0 1-42-42v-92a42 42 0 0 1 42-42z" fill="url(#lime)"/>
+  <rect x="160" y="216" width="150" height="20" rx="10" fill="#182014"/>
+  <rect x="160" y="258" width="196" height="20" rx="10" fill="#182014" opacity="0.55"/>
+  <circle cx="404" cy="146" r="22" fill="#c5f49d"/>
+  <circle cx="404" cy="146" r="36" fill="none" stroke="#c5f49d" stroke-opacity="0.3" stroke-width="6"/>
+</svg>

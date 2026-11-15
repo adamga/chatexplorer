@@ -1,0 +1,109 @@
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { createReadStream,createWriteStream } from 'node:fs';
+import { mkdir,readFile,writeFile,copyFile,cp,readdir,rm,access,rename } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
+import { spawn } from 'node:child_process';
+import { parseArgs } from 'node:util';
+import unzipper from 'unzipper';
+
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const nativeTools=['pdal','gdalinfo','gdalwarp','gdal_translate','gdal_contour','gdaldem','ogr2ogr','gdalsrsinfo','gdallocationinfo'];
+const {values}=parseArgs({options:{'gis-env':{type:'string'},iscc:{type:'string'},'node-version':{type:'string'},platform:{type:'string',default:'win32'}}});
+const buildRoot=path.join(root,'build'),cache=path.join(buildRoot,'cache'),output=path.join(root,'dist');
+
+function run(executable,args,options={}){
+  return new Promise((resolve,reject)=>{
+    const child=spawn(executable,args,{cwd:root,windowsHide:true,stdio:options.capture?'pipe':'inherit',...options});let stdout='',stderr='';
+    child.stdout?.on('data',chunk=>{stdout+=chunk;});child.stderr?.on('data',chunk=>{stderr+=chunk;});
+    child.once('error',reject);child.once('exit',code=>{if(code!==0&&!options.allowFailure)reject(new Error(`${path.basename(executable)} exited ${code}: ${stderr||stdout}`));else resolve({code,stdout,stderr});});
+  });
+}
+async function hash(filename){const digest=createHash('sha256');for await(const chunk of createReadStream(filename))digest.update(chunk);return digest.digest('hex');}
+async function download(url,filename,expected){
+  await mkdir(path.dirname(filename),{recursive:true});
+  if(await access(filename).then(()=>true,()=>false)){if(!expected||await hash(filename)===expected)return filename;await rm(filename);}
+  console.log(`Downloading ${path.basename(filename)}`);
+  const response=await fetch(url,{signal:AbortSignal.timeout(180000),headers:{'User-Agent':'TerrainServer-Installer-Builder'}});
+  if(!response.ok)throw new Error(`Download ${response.status}: ${url}`);
+  await pipeline(Readable.fromWeb(response.body),createWriteStream(filename+'.part'));await rename(filename+'.part',filename);
+  if(expected&&await hash(filename)!==expected){await rm(filename);throw new Error(`SHA256 mismatch for ${filename}`);}
+  return filename;
+}
+async function nodeRuntime(stage){
+  const releases=await fetch('https://nodejs.org/dist/index.json',{signal:AbortSignal.timeout(60000)}).then(response=>{if(!response.ok)throw new Error('Cannot read official Node.js releases.');return response.json();});
+  const version=values['node-version']||releases.find(item=>item.lts&&item.version.startsWith('v24.'))?.version;
+  if(!/^v24\.\d+\.\d+$/.test(version||''))throw new Error('Use a published Node.js 24 LTS version (v24.x.y).');
+  const basename=`node-${version}-win-x64.zip`;
+  const checksums=await fetch(`https://nodejs.org/dist/${version}/SHASUMS256.txt`,{signal:AbortSignal.timeout(60000)}).then(response=>{if(!response.ok)throw new Error('Cannot read official Node.js checksums.');return response.text();});
+  const expected=checksums.split('\n').map(line=>line.trim().split(/\s+/)).find(parts=>parts[1]===basename)?.[0];
+  if(!expected)throw new Error('Official Node.js release checksum not found.');
+  const archive=await download(`https://nodejs.org/dist/${version}/${basename}`,path.join(cache,basename),expected);
+  const extracted=path.join(buildRoot,'node-extracted');await rm(extracted,{recursive:true,force:true});await mkdir(extracted,{recursive:true});
+  await (await unzipper.Open.file(archive)).extract({path:extracted});
+  const nodeDir=path.join(stage,'runtime','node');await mkdir(nodeDir,{recursive:true});
+  for(const filename of ['node.exe','LICENSE','README.md'])await copyFile(path.join(extracted,`node-${version}-win-x64`,filename),path.join(nodeDir,filename));
+  await rm(extracted,{recursive:true,force:true});return {version,archive:basename,sha256:expected};
+}
+async function gisRuntime(stage,source){
+  if(!source)throw new Error('Supply --gis-env pointing to a working Windows conda-forge GDAL/PDAL environment.');
+  const records=new Map();for(const filename of await readdir(path.join(source,'conda-meta'))){if(!filename.endsWith('.json'))continue;const record=JSON.parse(await readFile(path.join(source,'conda-meta',filename),'utf8'));records.set(record.name,record);}
+  const selected=new Set();
+  function visit(name){if(name.startsWith('__')||selected.has(name))return;const record=records.get(name);if(!record)throw new Error(`Missing GIS runtime dependency: ${name}`);selected.add(name);for(const dependency of record.depends||[])visit(dependency.split(/\s+/)[0]);}
+  visit('libgdal-core');visit('libpdal-core');
+  const destination=path.join(stage,'runtime','gis');await mkdir(path.join(destination,'conda-meta'),{recursive:true});
+  const files=new Set();const packages=[];
+  for(const name of [...selected].sort()){
+    const record=records.get(name);packages.push({name,version:record.version,build:record.build,license:record.license,url:record.url,sha256:record.sha256});
+    await writeFile(path.join(destination,'conda-meta',`${name}.json`),JSON.stringify(record,null,2)+'\n');
+    for(const filename of record.files||[]){
+      if(/^(Library\/bin\/[^/]+\.dll|[^/]+\.dll)$/i.test(filename)||nativeTools.some(tool=>filename===`Library/bin/${tool}.exe`)||/^Library\/share\/(gdal|proj)\//.test(filename)||/^Library\/lib\/(gdalplugins|pdal)\/.*\.dll$/i.test(filename))files.add(filename);
+    }
+  }
+  for(const filename of files){const relative=path.normalize(filename);if(relative.startsWith('..')||path.isAbsolute(relative))throw new Error('Invalid native package member.');await mkdir(path.dirname(path.join(destination,relative)),{recursive:true});await copyFile(path.join(source,relative),path.join(destination,relative));}
+  await cp(path.join(source,'Library','share','licenses'),path.join(destination,'Library','share','licenses'),{recursive:true});
+  for(const tool of nativeTools)await access(path.join(destination,'Library','bin',`${tool}.exe`));
+  await writeFile(path.join(stage,'THIRD-PARTY-GIS.json'),JSON.stringify(packages,null,2)+'\n');
+  console.log(`Bundled ${selected.size} GIS runtime packages / ${files.size} native files.`);return packages;
+}
+async function wrapper(stage){
+  const url='https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe';
+  const filename=await download(url,path.join(cache,'WinSW.NET461-2.12.0.exe'));
+  const licenseResponse=await fetch('https://api.github.com/repos/winsw/winsw/license?ref=v2.12.0',{headers:{'User-Agent':'TerrainServer-Installer-Builder'},signal:AbortSignal.timeout(60000)});
+  if(!licenseResponse.ok)throw new Error('Cannot retrieve WinSW license.');const license=await licenseResponse.json();
+  await copyFile(filename,path.join(stage,'TerrainServerService.exe'));await writeFile(path.join(stage,'LICENSE-WinSW.txt'),Buffer.from(license.content,'base64'));
+  return {version:'2.12.0',runtime:'.NET Framework 4.6.1+',url,sha256:await hash(filename)};
+}
+async function compiler(){
+  const candidates=[values.iscc,process.env.ISCC_PATH,path.join(process.env.LOCALAPPDATA||os.homedir(),'Programs','Inno Setup 6','ISCC.exe'),path.join(process.env['ProgramFiles(x86)']||'C:/Program Files (x86)','Inno Setup 6','ISCC.exe'),path.join(process.env.LOCALAPPDATA||os.homedir(),'Programs','Inno Setup 7','ISCC.exe')].filter(Boolean);
+  for(const candidate of candidates)if(await access(candidate).then(()=>true,()=>false))return candidate;
+  throw new Error('Install Inno Setup 6/7 or pass --iscc with the full ISCC.exe path.');
+}
+async function validate(stage){
+  const node=path.join(stage,'runtime','node','node.exe');const gis=path.join(stage,'runtime','gis');
+  const env={...process.env,PATH:[path.join(gis,'Library','bin'),gis,path.join(process.env.SystemRoot||'C:/Windows','System32'),process.env.SystemRoot||'C:/Windows'].join(path.delimiter),GDAL_DATA:path.join(gis,'Library/share/gdal'),PROJ_DATA:path.join(gis,'Library/share/proj'),PROJ_LIB:path.join(gis,'Library/share/proj'),PROJ_NETWORK:'OFF'};
+  await run(node,['--input-type=module','-e',"import sharp from 'sharp';import {DatabaseSync} from 'node:sqlite';console.log('Packaged Sharp',sharp.versions.sharp);new DatabaseSync(':memory:').close();"],{cwd:stage,env});
+  for(const tool of nativeTools){const result=await run(path.join(gis,'Library','bin',`${tool}.exe`),['--version'],{env,capture:true,allowFailure:true});if(!/GDAL \d|PDAL \d|pdal \d/i.test(result.stdout+'\n'+result.stderr))throw new Error(`Bundled ${tool} cannot start: ${result.stderr||result.stdout}`);console.log(`${tool}: ${(result.stdout+' '+result.stderr).match(/(?:GDAL|pdal|PDAL) [^\r\n]+/)?.[0]}`);}
+  const parsed=await run('powershell.exe',['-NoProfile','-Command',`$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile('${path.join(stage,'installer/windows/service.ps1').replaceAll("'","''")}',[ref]$null,[ref]$errors)|Out-Null;if($errors.Count){$errors|ForEach-Object{Write-Error $_.Message};exit 1}`],{capture:true});
+  if(parsed.code)throw new Error(parsed.stderr);
+}
+async function main(){
+  if(process.platform!=='win32'||values.platform!=='win32')throw new Error('This build currently targets Windows/x64.');
+  const packageJson=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
+  const stage=path.join(buildRoot,'staging','windows-x64');await rm(stage,{recursive:true,force:true});await mkdir(stage,{recursive:true});await mkdir(output,{recursive:true});
+  for(const directory of ['src','public','installer'])await cp(path.join(root,directory),path.join(stage,directory),{recursive:true});
+  await mkdir(path.join(stage,'scripts'));await copyFile(path.join(root,'scripts/configure-service.js'),path.join(stage,'scripts/configure-service.js'));
+  for(const filename of ['package.json','package-lock.json','.env.example','README.md'])await copyFile(path.join(root,filename),path.join(stage,filename));
+  const npmCli=process.env.npm_execpath||path.join(path.dirname(process.execPath),'node_modules/npm/bin/npm-cli.js');
+  await run(process.execPath,[npmCli,'ci','--omit=dev','--ignore-scripts','--no-audit','--no-fund'],{cwd:stage});
+  const node=await nodeRuntime(stage);const packages=await gisRuntime(stage,path.resolve(values['gis-env']||process.env.GIS_ENV_ROOT||''));const serviceWrapper=await wrapper(stage);
+  await writeFile(path.join(stage,'BUILD-MANIFEST.json'),JSON.stringify({application:packageJson.name,version:packageJson.version,platform:'windows-x64',created:new Date().toISOString(),node,serviceWrapper,gisPackages:packages,packageLockSha256:await hash(path.join(stage,'package-lock.json'))},null,2)+'\n');
+  await validate(stage);
+  await run(await compiler(),['/Qp',`/DStageDir=${stage}`,`/DOutputDir=${output}`,`/DAppVersion=${packageJson.version}`,path.join(root,'installer/windows/setup.iss')]);
+  const setup=path.join(output,`TerrainServer-${packageJson.version}-windows-x64-setup.exe`);await access(setup);await writeFile(setup+'.sha256',`${await hash(setup)}  ${path.basename(setup)}\n`);
+  console.log(`Installer ready: ${setup}`);
+}
+main().catch(error=>{console.error(error.stack);process.exitCode=1;});

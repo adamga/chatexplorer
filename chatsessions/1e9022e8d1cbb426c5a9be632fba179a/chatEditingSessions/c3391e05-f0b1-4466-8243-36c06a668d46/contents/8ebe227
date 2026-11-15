@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import path from 'node:path';
+import { projectExtent, geographicExtent, Gis } from '../src/gis.js';
+
+test('projected export dimensions represent actual ground meters, not Web Mercator scale', () => {
+  const original = [-79.5, 43.5, -79.499, 43.501];
+  const projected = projectExtent(original);
+  assert.equal(projected.crs, 'EPSG:32617');
+  assert.ok(projected.bbox[2] - projected.bbox[0] > 70 && projected.bbox[2] - projected.bbox[0] < 100);
+  assert.ok(projected.bbox[3] - projected.bbox[1] > 100 && projected.bbox[3] - projected.bbox[1] < 120);
+  const restored = geographicExtent(projected.bbox, projected.crs);
+  assert.ok(Math.abs(restored[0] - original[0]) < 0.0001);
+});
+
+test('GIS command wrapper reports missing executables without a shell', async () => {
+  const gis = new Gis({ tools: { missing: 'this-command-does-not-exist-terrainserver' } });
+  await assert.rejects(gis.run('missing', ['--version']), /could not run/);
+});
+
+test('bundled GIS uses platform-native data directories and relocatable Linux library paths',()=>{
+  const root=path.resolve('runtime/gis');const gis=new Gis({gisEnvRoot:root});
+  const windows=gis.environment('win32');assert.equal(windows.GDAL_DATA,path.join(root,'Library/share/gdal'));assert.equal(windows.PROJ_DATA,path.join(root,'Library/share/proj'));
+  const linux=gis.environment('linux');assert.equal(linux.GDAL_DATA,path.join(root,'share/gdal'));assert.equal(linux.PROJ_DATA,path.join(root,'share/proj'));assert.ok(linux.LD_LIBRARY_PATH.startsWith(path.join(root,'lib')));assert.equal(linux.PROJ_NETWORK,'OFF');assert.ok(linux.PATH.startsWith(path.join(root,'bin')));
+});

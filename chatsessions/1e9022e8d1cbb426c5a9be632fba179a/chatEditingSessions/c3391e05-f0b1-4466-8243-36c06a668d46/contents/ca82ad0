@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp,writeFile,rm } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import request from 'supertest';
+import { writeArrayBuffer } from 'geotiff';
+import { createService } from '../src/app.js';
+
+test('local API serves discovery, Range files, Scorecarder manifests, STAC, and bounded raster queries',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-api-'));const service=await createService({storageRoot:root,catalogPath:':memory:',updateCheckDays:0,startJobs:false});
+  try{
+    await request(service.app).get('/api/health').expect(200);
+    const sources=await request(service.app).get('/api/sources').expect(200);assert.ok(sources.body.sources.length>=9);
+    await request(service.app).post('/api/courses').send({id:'fixture',name:'Fixture',country:'CA',province:'ON',bbox:[-79.5,43.59,-79.49,43.6],bufferMeters:0}).expect(201);
+    const values=Array.from({length:100},(value,index)=>100+index);
+    const bytes=Buffer.from(writeArrayBuffer(values,{width:10,height:10,BitsPerSample:[8],SampleFormat:[1],ModelPixelScale:[0.001,0.001,0],ModelTiepoint:[0,0,0,-79.5,43.6,0],GeographicTypeGeoKey:4326,GTModelTypeGeoKey:2,GTRasterTypeGeoKey:1,GDAL_NODATA:'255'}));
+    const filename=path.join(root,'fixture.tif');await writeFile(filename,bytes);
+    const asset=service.catalog.saveAsset({sourceId:'ontario',title:'Fixture Raster',product:'dtm',extension:'tif',path:filename,bbox:[-79.5,43.59,-79.49,43.6],resolutionMeters:1,bytes:bytes.length,sha256:'fixture-hash'});service.catalog.linkAsset('fixture',asset.id);
+    const binary=await request(service.app).get(`/api/assets/${asset.id}/download.tif`).set('Range','bytes=0-7').expect(206);assert.equal(binary.headers['content-range'],`bytes 0-7/${bytes.length}`);
+    const manifest=await request(service.app).get('/api/scorecarder/manifest?bbox=-79.5,43.59,-79.49,43.6').expect(200);assert.equal(manifest.body.assets.length,1);assert.ok(manifest.body.assets[0].url.endsWith('.tif'));assert.equal(manifest.body.assets[0].bbox.minLng,-79.5);
+    const arcgis=await request(service.app).get('/api/scorecarder/query').query({geometry:JSON.stringify({xmin:-79.5,ymin:43.59,xmax:-79.49,ymax:43.6})}).expect(200);assert.equal(arcgis.body.features.length,1);assert.ok(arcgis.body.features[0].attributes.downloadUrl.endsWith('.tif'));
+    const stac=await request(service.app).post('/api/stac/search').send({bbox:[-79.5,43.59,-79.49,43.6],collections:['ontario']}).expect(200);assert.equal(stac.body.features.length,1);
+    await request(service.app).get('/api/stac/collections/ontario/items').expect(200).then(result=>assert.equal(result.body.features.length,1));
+    await request(service.app).get('/api/stac/collections/derived').expect(200);
+    const terrain=await request(service.app).get('/api/course/fixture/terrain').expect(200);assert.ok(terrain.body.dem.endsWith('.tif'));
+    const sample=await request(service.app).get('/api/terrain/elevation?longitude=-79.4995&latitude=43.5995').expect(200);assert.equal(sample.body.points[0].elevation,100);
+    const grid=await request(service.app).get(`/api/terrain/grid?assetId=${asset.id}&width=16&height=16`).expect(200);assert.equal(grid.body.values.length,256);assert.equal(grid.body.localOnly,true);
+    const preview=await request(service.app).get(`/api/assets/${asset.id}/preview.png`).expect(200);assert.ok(preview.headers['content-type'].includes('image/png'));
+    await request(service.app).get('/api/terrain/query?bbox=-75,43,-74,44').expect(200).then(result=>assert.equal(result.body.total,0));
+    await request(service.app).get('/api/terrain/query?q=not-present').expect(200).then(result=>assert.equal(result.body.total,0));
+    await request(service.app).get('/api/terrain/query?q=Fixture').expect(200).then(result=>assert.equal(result.body.total,1));
+    await request(service.app).get('/api/terrain/query?limit=100000').expect(400);
+    await request(service.app).get('/api/openapi.json').expect(200);await request(service.app).get('/docs').expect(200);
+  }finally{await service.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('API authentication, CORS origin checks, and DNS-rebinding Host protection',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-auth-'));const service=await createService({storageRoot:root,catalogPath:':memory:',apiKey:'test-key',updateCheckDays:0,startJobs:false});
+  try{
+    await request(service.app).get('/api/settings').expect(401);
+    await request(service.app).get('/api/settings').set('Authorization','Bearer test-key').expect(200);
+    await request(service.app).post('/api/courses').set('Authorization','Bearer test-key').set('Origin','https://untrusted.example').send({}).expect(403);
+    await request(service.app).get('/api/health').set('Host','attacker.example').expect(403);
+    await request(service.app).get('/api/health').expect(200);
+  }finally{await service.close();await rm(root,{recursive:true,force:true});}
+});

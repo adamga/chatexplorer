@@ -1,0 +1,156 @@
+#ifndef StageDir
+  #error StageDir must point to the packaged Windows runtime.
+#endif
+#ifndef AppVersion
+  #define AppVersion "1.0.0"
+#endif
+#ifdef VerificationBuild
+  #define AppIdentifier "{{F87F47D5-C447-48B1-8D4B-27956ED8C9AD}"
+  #define ProductName "TerrainServer Installer Verification"
+  #define RegistryKey "Software\TerrainServerInstallerVerification"
+  #define OutputStem "TerrainServer-InstallerVerification"
+#else
+  #define AppIdentifier "{{7B3D984D-32E1-4A12-9E54-19C2588C230E}"
+  #define ProductName "TerrainServer"
+  #define RegistryKey "Software\TerrainServer"
+  #define OutputStem "TerrainServer"
+#endif
+
+[Setup]
+AppId={#AppIdentifier}
+AppName={#ProductName}
+AppVersion={#AppVersion}
+AppPublisher=TerrainServer
+DefaultDirName={autopf}\TerrainServer
+DefaultGroupName={#ProductName}
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
+UsePreviousPrivileges=yes
+WizardStyle=modern
+Compression=lzma2/normal
+SolidCompression=yes
+SetupLogging=yes
+OutputDir={#OutputDir}
+OutputBaseFilename={#OutputStem}-{#AppVersion}-windows-x64-setup
+UninstallDisplayIcon={app}\TerrainServerService.exe
+DisableProgramGroupPage=yes
+CloseApplications=no
+RestartApplications=no
+DisableWelcomePage=no
+
+[Tasks]
+Name: service; Description: "Install and start the TerrainServer Windows service"; Check: IsAdminInstallMode
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\node_modules"
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\src"
+Type: filesandordirs; Name: "{app}\public"
+
+[Files]
+Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\installer\windows\service.ps1"; Flags: dontcopy
+
+[Registry]
+Root: HKA; Subkey: "{#RegistryKey}"; ValueType: string; ValueName: "StateDirectory"; ValueData: "{code:GetStateDirectory}"
+
+[Icons]
+Name: "{group}\TerrainServer (foreground)"; Filename: "{app}\launch.cmd"; WorkingDir: "{app}"
+Name: "{group}\Configuration Directory"; Filename: "{code:GetStateDirectory}"
+Name: "{group}\Uninstall TerrainServer"; Filename: "{uninstallexe}"
+
+[UninstallRun]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\windows\service.ps1"" -Mode Remove -AppDirectory ""{app}"""; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode
+
+[UninstallDelete]
+Type: files; Name: "{app}\TerrainServerService.xml"
+Type: files; Name: "{app}\installation.json"
+Type: files; Name: "{app}\launch.cmd"
+
+[Code]
+var
+  Locations: TInputDirWizardPage;
+  Connection: TInputQueryWizardPage;
+  Security: TInputOptionWizardPage;
+
+function GetStateDirectory(Param: String): String;
+begin
+  Result := Locations.Values[0];
+end;
+
+function Quote(Value: String): String;
+begin
+  Result := '"' + Value + '"';
+end;
+
+procedure InitializeWizard;
+var
+  State: String;
+begin
+  if IsAdminInstallMode then begin
+    State := ExpandConstant('{commonappdata}\TerrainServer');
+    RegQueryStringValue(HKLM64, '{#RegistryKey}', 'StateDirectory', State);
+  end else begin
+    State := ExpandConstant('{localappdata}\TerrainServer');
+    RegQueryStringValue(HKCU, '{#RegistryKey}', 'StateDirectory', State);
+  end;
+  Locations := CreateInputDirPage(wpSelectDir, 'Configuration and Terrain Storage', 'Choose persistent directories outside the program folder.', 'Existing configuration, catalog, and terrain files are preserved during upgrades and uninstall.', False, '');
+  Locations.Add('Configuration, catalog, and logs:');
+  Locations.Add('Default terrain storage:');
+  Locations.Values[0] := ExpandConstant('{param:STATEDIR|' + State + '}');
+  Locations.Values[1] := ExpandConstant('{param:STORAGEROOT|' + Locations.Values[0] + '\terrain-data}');
+  Connection := CreateInputQueryPage(Locations.ID, 'Server Connection', 'Choose the listening port and network binding.', 'Loopback is recommended behind a TLS reverse proxy. Remote bindings always require a generated API key. Existing .env settings take precedence on upgrades.');
+  Connection.Add('TCP port:', False);
+  Connection.Add('Bind address (127.0.0.1 or 0.0.0.0):', False);
+  Connection.Values[0] := ExpandConstant('{param:PORT|3123}');
+  Connection.Values[1] := ExpandConstant('{param:BIND|127.0.0.1}');
+  Security := CreateInputOptionPage(Connection.ID, 'API Authentication', 'Keep the API key in the protected configuration file.', 'A generated key is stored only in .env, not in service arguments or installer logs. Read that file locally to connect authenticated clients.', False, False);
+  Security.Add('Require an API key even when listening only on loopback');
+  Security.Values[0] := ExpandConstant('{param:REQUIREKEY|0}') = '1';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Port: Integer;
+begin
+  Result := True;
+  if CurPageID = Locations.ID then begin
+    if (Length(Locations.Values[0]) < 4) or (Length(Locations.Values[1]) < 4) or (ExtractFileDrive(Locations.Values[0]) = '') or (ExtractFileDrive(Locations.Values[1]) = '') then begin
+      MsgBox('Choose absolute, dedicated directories, not volume roots.', mbError, MB_OK); Result := False;
+    end;
+  end;
+  if CurPageID = Connection.ID then begin
+    Port := StrToIntDef(Connection.Values[0], 0);
+    if (Port < 1) or (Port > 65535) then begin MsgBox('Port must be from 1 to 65535.', mbError, MB_OK); Result := False; end;
+    if (Connection.Values[1] <> '127.0.0.1') and (Connection.Values[1] <> 'localhost') and (Connection.Values[1] <> '0.0.0.0') and (Connection.Values[1] <> '::1') and (Connection.Values[1] <> '::') then begin MsgBox('Choose 127.0.0.1, localhost, ::1, 0.0.0.0, or ::.', mbError, MB_OK); Result := False; end;
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExitCode: Integer;
+begin
+  Result := '';
+  if IsAdminInstallMode and WizardIsTaskSelected('service') then begin
+    ExtractTemporaryFile('service.ps1');
+    if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), '-NoProfile -ExecutionPolicy Bypass -File ' + Quote(ExpandConstant('{tmp}\service.ps1')) + ' -Mode Prepare -AppDirectory ' + Quote(WizardDirValue), '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then ExitCode := -1;
+    if ExitCode <> 0 then Result := 'Could not prepare the Windows service. An existing TerrainServer service must belong to this installation. Check administrator rights and the selected program folder.';
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Arguments: String;
+  ExitCode: Integer;
+begin
+  if CurStep = ssPostInstall then begin
+    Arguments := '-NoProfile -ExecutionPolicy Bypass -File ' + Quote(ExpandConstant('{app}\installer\windows\service.ps1')) + ' -Mode Configure -AppDirectory ' + Quote(ExpandConstant('{app}')) + ' -StateDirectory ' + Quote(Locations.Values[0]) + ' -StorageRoot ' + Quote(Locations.Values[1]) + ' -Port ' + Connection.Values[0] + ' -BindAddress ' + Quote(Connection.Values[1]);
+    if Security.Values[0] then Arguments := Arguments + ' -RequireApiKey';
+    if IsAdminInstallMode and WizardIsTaskSelected('service') then Arguments := Arguments + ' -InstallService';
+    if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Arguments, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then ExitCode := -1;
+    if ExitCode <> 0 then RaiseException('Configuration or service startup failed. Check the configuration paths, port availability, and state-directory logs. Existing terrain data has not been removed.');
+  end;
+end;

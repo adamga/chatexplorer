@@ -1,0 +1,120 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { mkdir,readFile,writeFile,rename,access } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { parseArgs } from 'node:util';
+import dotenv from 'dotenv';
+
+const tools=['pdal','gdalinfo','gdalwarp','gdal_translate','gdal_contour','gdaldem','ogr2ogr','gdalsrsinfo','gdallocationinfo'];
+const xml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');
+const unitQuote=value=>'"'+String(value).replaceAll('%','%%').replaceAll('\\','\\\\').replaceAll('"','\\"')+'"';
+const portablePath=value=>String(value).replaceAll('\\','/');
+
+export function windowsServiceXml(appDir,stateDir){
+  return `<service>
+  <id>TerrainServer</id>
+  <name>TerrainServer</name>
+  <description>Local LiDAR acquisition, storage, and terrain API.</description>
+  <executable>%BASE%\\runtime\\node\\node.exe</executable>
+  <arguments>"%BASE%\\src\\server.js"</arguments>
+  <workingdirectory>%BASE%</workingdirectory>
+  <env name="TERRAIN_CONFIG_PATH" value="${xml(path.join(stateDir,'.env'))}"/>
+  <env name="TEMP" value="${xml(path.join(stateDir,'tmp'))}"/>
+  <env name="TMP" value="${xml(path.join(stateDir,'tmp'))}"/>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart/>
+  <serviceaccount><domain>NT AUTHORITY</domain><user>LocalService</user></serviceaccount>
+  <stoptimeout>60sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <onfailure action="restart" delay="10sec"/>
+  <logpath>${xml(path.join(stateDir,'logs'))}</logpath>
+  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>8</keepFiles></log>
+</service>
+`;
+}
+
+export function systemdService(appDir,stateDir){
+  return `[Unit]
+Description=TerrainServer local LiDAR and terrain API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=terrainserver
+Group=terrainserver
+WorkingDirectory=${unitQuote(appDir)}
+Environment=${unitQuote(`TERRAIN_CONFIG_PATH=${path.posix.join(stateDir,'.env')}`)}
+Environment=${unitQuote(`TMPDIR=${path.posix.join(stateDir,'tmp')}`)}
+ExecStart=${unitQuote(path.posix.join(appDir,'runtime/node/bin/node'))} ${unitQuote(path.posix.join(appDir,'src/server.js'))}
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadOnlyPaths=${unitQuote(appDir)}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+`;
+}
+
+export async function configureInstallation(options){
+  const platform=options.platform||process.platform;
+  if(!['win32','linux'].includes(platform))throw new Error('Installer supports Windows/x64 and Linux/x64.');
+  const appDir=path.resolve(options.appDir||'.');
+  if(!options.stateDir||!path.isAbsolute(options.stateDir))throw new Error('state-dir must be an absolute directory outside the program directory.');
+  const stateDir=path.resolve(options.stateDir);
+  const contained=value=>{const relative=path.relative(appDir,path.resolve(value));return relative===''||(!relative.startsWith(`..${path.sep}`)&&relative!=='..'&&!path.isAbsolute(relative));};
+  if(contained(stateDir))throw new Error('State and configuration must be outside the program directory.');
+  const envPath=path.join(stateDir,'.env');
+  await mkdir(stateDir,{recursive:true,mode:0o700});
+  const original=await readFile(envPath,'utf8').catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+  const values=dotenv.parse(original??await readFile(path.join(appDir,'.env.example'),'utf8'));
+  const preserved=original!==null;
+  if(!preserved){
+    const port=Number(options.port??3123);
+    if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Port must be an integer from 1 to 65535.');
+    const host=options.host||'127.0.0.1';
+    if(!['127.0.0.1','localhost','::1','0.0.0.0','::'].includes(host))throw new Error('Choose a loopback or all-interfaces bind address.');
+    const storageRoot=options.storageRoot||path.join(stateDir,'terrain-data');
+    if(!path.isAbsolute(storageRoot)||contained(storageRoot))throw new Error('Terrain storage must be an absolute directory outside the program directory.');
+    values.HOST=host;values.PORT=String(port);values.STORAGE_ROOT=portablePath(path.resolve(storageRoot));
+    values.CATALOG_PATH=portablePath(path.join(stateDir,'catalog','catalog.sqlite'));
+    values.CORS_ORIGINS=`http://localhost:${port},http://127.0.0.1:${port}`;
+    values.API_KEY=options.requireKey||!['127.0.0.1','localhost','::1'].includes(host)?randomBytes(32).toString('hex'):'';
+  }
+  if(!['localhost','127.0.0.1','::1'].includes(values.HOST||'127.0.0.1')&&!values.API_KEY)throw new Error('Existing remote configuration requires API_KEY.');
+  const storageRoot=path.resolve(stateDir,values.STORAGE_ROOT||'terrain-data');
+  const catalogPath=path.resolve(stateDir,values.CATALOG_PATH||'catalog/catalog.sqlite');
+  if(contained(storageRoot)||contained(catalogPath))throw new Error('Existing catalog and storage paths must be outside the program directory.');
+  for(const directory of [storageRoot,path.dirname(catalogPath),path.join(stateDir,'logs'),path.join(stateDir,'tmp')])await mkdir(directory,{recursive:true,mode:0o700});
+  const gisDir=path.join(appDir,'runtime','gis');
+  values.GIS_ENV_ROOT=portablePath(gisDir);
+  for(const tool of tools)values[`${tool.toUpperCase()}_BIN`]=portablePath(path.join(gisDir,platform==='win32'?'Library/bin':'bin',`${tool}${platform==='win32'?'.exe':''}`));
+  const content=Object.entries(values).map(([key,value])=>`${key}=${JSON.stringify(value)}`).join('\n')+'\n';
+  if(content!==original){
+    if(preserved)await writeFile(path.join(stateDir,`.env.backup-${Date.now()}`),original,{mode:0o600});
+    const temporary=envPath+'.tmp';await writeFile(temporary,content,{mode:0o600});await rename(temporary,envPath);
+  }
+  const serviceFile=path.join(appDir,platform==='win32'?'TerrainServerService.xml':'terrainserver.service');
+  await writeFile(serviceFile,platform==='win32'?windowsServiceXml(appDir,stateDir):systemdService(portablePath(appDir),portablePath(stateDir)));
+  const bootstrap={stateDir,envPath,storageRoot,catalogPath,host:values.HOST,port:Number(values.PORT||3123),apiKeyRequired:!!values.API_KEY,preserved};
+  await writeFile(path.join(appDir,'installation.json'),JSON.stringify(bootstrap,null,2)+'\n');
+  await writeFile(path.join(appDir,'launch.cmd'),`@echo off\r\nset "TERRAIN_CONFIG_PATH=${envPath}"\r\n"%~dp0runtime\\node\\node.exe" "%~dp0src\\server.js"\r\n`);
+  return bootstrap;
+}
+
+async function main(){
+  const {values}=parseArgs({options:{'app-dir':{type:'string'},'state-dir':{type:'string'},'storage-root':{type:'string'},port:{type:'string'},host:{type:'string'},'require-key':{type:'boolean',default:false},platform:{type:'string'}}});
+  await access(path.join(path.resolve(values['app-dir']||'.'),'src','server.js'));
+  const result=await configureInstallation({appDir:values['app-dir'],stateDir:values['state-dir'],storageRoot:values['storage-root'],port:values.port,host:values.host,requireKey:values['require-key'],platform:values.platform});
+  console.log(`Configuration: ${result.envPath}\nStorage: ${result.storageRoot}\nPort: ${result.port}\nExisting settings: ${result.preserved?'preserved':'new'}\nAPI key: ${result.apiKeyRequired?'required; read locally from protected .env':'not required (loopback)'}`);
+}
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main().catch(error=>{console.error(error.message);process.exitCode=1;});

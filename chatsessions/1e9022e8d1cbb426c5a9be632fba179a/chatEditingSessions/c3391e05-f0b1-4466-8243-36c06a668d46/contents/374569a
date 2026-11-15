@@ -1,0 +1,11 @@
+node_modules/
+build/
+dist/
+.env
+terrain-data/
+data/
+logs/
+test-results/
+*.log
+*.sqlite*
+*.part

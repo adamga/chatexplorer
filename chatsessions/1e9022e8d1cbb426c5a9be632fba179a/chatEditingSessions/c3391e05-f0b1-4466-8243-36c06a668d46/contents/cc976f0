@@ -1,0 +1,93 @@
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import proj4 from 'proj4';
+import { HttpError, parseBbox, metricCrs } from './spatial.js';
+
+proj4.defs('EPSG:3413', '+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +datum=WGS84 +units=m +no_defs');
+proj4.defs('EPSG:3031', '+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +datum=WGS84 +units=m +no_defs');
+for (let zone = 1; zone <= 60; zone++) {
+  proj4.defs(`EPSG:${32600 + zone}`, `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`);
+  proj4.defs(`EPSG:${32700 + zone}`, `+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`);
+  if (zone <= 23) proj4.defs(`EPSG:${26900 + zone}`, `+proj=utm +zone=${zone} +datum=NAD83 +units=m +no_defs`);
+}
+proj4.defs('EPSG:3979', '+proj=lcc +lat_0=49 +lon_0=-95 +lat_1=49 +lat_2=77 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs');
+
+export function projectExtent(extent, target = metricCrs(extent)) {
+  const [west, south, east, north] = parseBbox(extent);
+  const points = [];
+  for (let step = 0; step <= 16; step++) {
+    const fraction = step / 16;
+    points.push(proj4('EPSG:4326', target, [west + (east - west) * fraction, south]),
+      proj4('EPSG:4326', target, [west + (east - west) * fraction, north]),
+      proj4('EPSG:4326', target, [west, south + (north - south) * fraction]),
+      proj4('EPSG:4326', target, [east, south + (north - south) * fraction]));
+  }
+  return { crs: target, bbox: [Math.min(...points.map((point) => point[0])), Math.min(...points.map((point) => point[1])), Math.max(...points.map((point) => point[0])), Math.max(...points.map((point) => point[1]))] };
+}
+
+export function geographicExtent(extent, crs) {
+  const [west, south, east, north] = extent;
+  const points = [[west, south], [east, south], [east, north], [west, north]].map((point) => proj4(crs, 'EPSG:4326', point));
+  return [Math.min(...points.map((point) => point[0])), Math.min(...points.map((point) => point[1])), Math.max(...points.map((point) => point[0])), Math.max(...points.map((point) => point[1]))];
+}
+
+export class Gis {
+  constructor(config) { this.config = config; }
+
+  environment(platform=process.platform) {
+    const root = this.config.gisEnvRoot;
+    if (!root) return process.env;
+    const windows=platform==='win32';const share=path.join(root,...(windows?['Library','share']:['share']));
+    return { ...process.env, PATH: [...(windows?[path.join(root,'Library','bin')]:[]),path.join(root,'bin'),root,process.env.PATH].filter(Boolean).join(path.delimiter),
+      ...(!windows?{LD_LIBRARY_PATH:[path.join(root,'lib'),process.env.LD_LIBRARY_PATH].filter(Boolean).join(':')}:{}),
+      GDAL_DATA: path.join(share, 'gdal'), PROJ_DATA: path.join(share, 'proj'),
+      PROJ_LIB: path.join(share, 'proj'), PROJ_NETWORK: 'OFF', GDAL_NUM_THREADS: '2', GDAL_CACHEMAX: '256' };
+  }
+
+  run(tool, args, options = {}) {
+    const executable = this.config.tools[tool];
+    if (!executable) throw new HttpError(503, `${tool} is not configured in .env.`);
+    options.signal?.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const child = spawn(executable, args.map(String), { env: this.environment(), cwd: options.cwd, windowsHide: true, shell: false });
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const finish = (error, result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', cancel);
+        if (error) reject(error); else resolve(result);
+      };
+      const cancel = () => { child.kill(); finish(options.signal?.reason || new Error('Processing cancelled.')); };
+      options.signal?.addEventListener('abort', cancel, { once: true });
+      const timer = setTimeout(() => { child.kill(); finish(new HttpError(504, `${tool} exceeded its processing time limit.`)); }, options.timeoutMs || 6 * 60 * 60 * 1000);
+      timer.unref?.();
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+        options.onOutput?.(chunk.toString());
+        if (stdout.length > (options.maxOutputBytes || 64 * 1024 * 1024)) { child.kill(); finish(new HttpError(413, 'GIS output exceeded its limit; refine the query boundary.')); }
+      });
+      child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-16000); options.onOutput?.(chunk.toString()); });
+      child.on('error', (error) => finish(new HttpError(503, `${tool} could not run: ${error.message}. Check its .env path and GIS_ENV_ROOT.`)));
+      child.stdin.on('error',error=>{if(error.code!=='EPIPE')finish(new HttpError(503,`${tool} input failed: ${error.message}`));});
+      child.stdin.end(options.input||'');
+      child.on('close', (code) => finish(code === 0 ? null : new HttpError(502, `${tool} exited with code ${code}: ${stderr.slice(-4000)}`, { stdout,stderr,code }), { stdout, stderr, code }));
+    });
+  }
+
+  async check() {
+    const tools = await Promise.all(Object.keys(this.config.tools).map(async (name) => {
+      try { const result = await this.run(name, ['--version'], { timeoutMs: 20000, maxOutputBytes: 100000 });
+        return { name, executable: this.config.tools[name], available: true, version: (result.stdout || result.stderr).trim().split(/\r?\n/).find((line) => /\b(?:GDAL|pdal)\s+[\d.]/i.test(line)) || 'Available' };
+      } catch (error) {
+        const version = (error.details?.stdout || '').split(/\r?\n/).find((line) => /\b(?:GDAL|pdal)\s+[\d.]/i.test(line));
+        if (version) return { name, executable: this.config.tools[name], available: true, version, versionCheckExitCode: error.details.code };
+        return { name, executable: this.config.tools[name], available: false, error: error.message };
+      }
+    }));
+    return { tools, rasterReady: tools.filter((tool) => tool.name !== 'pdal' && tool.name !== 'ogr2ogr').every((tool) => tool.available),
+      pointCloudReady: tools.every((tool) => tool.available), vectorIndexReady: tools.find((tool) => tool.name === 'ogr2ogr')?.available };
+  }
+}

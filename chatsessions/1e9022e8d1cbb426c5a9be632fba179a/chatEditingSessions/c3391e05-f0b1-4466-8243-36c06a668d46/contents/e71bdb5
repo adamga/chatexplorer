@@ -1,0 +1,205 @@
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { normalizeBoundary, parseBbox, selectAssets, HttpError } from './spatial.js';
+import { safeSegment } from './config.js';
+
+const now = () => new Date().toISOString();
+export const assetId = (sourceId, url, revision = '') => createHash('sha256').update(`${sourceId}\n${url}\n${revision}`).digest('hex').slice(0, 32);
+
+export class Catalog {
+  constructor(filename) {
+    if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true });
+    this.db = new DatabaseSync(filename);
+    this.db.exec(`
+      PRAGMA journal_mode=WAL;
+      PRAGMA foreign_keys=ON;
+      PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, metadata TEXT NOT NULL, refreshed_at TEXT);
+      CREATE TABLE IF NOT EXISTS storage_roots (path TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS courses (id TEXT PRIMARY KEY, name TEXT NOT NULL, country TEXT NOT NULL, province TEXT, latitude REAL, longitude REAL, metadata TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS assets (
+        rowid INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, source_id TEXT NOT NULL, product TEXT NOT NULL,
+        resolution REAL, collection_id TEXT, remote_url TEXT, revision TEXT, path TEXT, bytes INTEGER DEFAULT 0,
+        sha256 TEXT, status TEXT NOT NULL DEFAULT 'remote', metadata TEXT NOT NULL, created_at TEXT NOT NULL, downloaded_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS assets_source ON assets(source_id, product, status, resolution);
+      CREATE INDEX IF NOT EXISTS assets_remote ON assets(remote_url);
+      CREATE TABLE IF NOT EXISTS asset_locations (asset_id TEXT NOT NULL REFERENCES assets(id), path TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT, created_at TEXT NOT NULL, PRIMARY KEY(asset_id,path));
+      CREATE VIRTUAL TABLE IF NOT EXISTS asset_bounds USING rtree(rowid, west, east, south, north);
+      CREATE TABLE IF NOT EXISTS course_assets (course_id TEXT NOT NULL REFERENCES courses(id), asset_id TEXT NOT NULL REFERENCES assets(id), PRIMARY KEY(course_id,asset_id));
+      CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, progress TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS job_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), time TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id, id);
+      CREATE TABLE IF NOT EXISTS discovery_plans (id TEXT PRIMARY KEY, metadata TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS packages (id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id), metadata TEXT NOT NULL, created_at TEXT NOT NULL);
+    `);
+  }
+
+  close() { this.db.close(); }
+
+  registerRoot(root) {
+    this.db.prepare('INSERT OR IGNORE INTO storage_roots VALUES (?,?)').run(path.resolve(root), now());
+  }
+
+  roots() { return this.db.prepare('SELECT path FROM storage_roots ORDER BY created_at').all().map((row) => row.path); }
+
+  saveSource(source) {
+    this.db.prepare('INSERT INTO sources VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata,refreshed_at=excluded.refreshed_at')
+      .run(source.id, JSON.stringify(source), source.refreshedAt || null);
+  }
+
+  sources() { return this.db.prepare('SELECT metadata FROM sources ORDER BY id').all().map((row) => JSON.parse(row.metadata)); }
+  source(id) { const row = this.db.prepare('SELECT metadata FROM sources WHERE id=?').get(id); return row ? JSON.parse(row.metadata) : null; }
+
+  saveAsset(input) {
+    const id = input.id || assetId(input.sourceId, input.remoteUrl || input.url || input.path, input.revision);
+    const previous = this.asset(id);
+    const asset = { ...previous, ...input, id, path: input.path || previous?.path || null };
+    const extent = parseBbox(asset.bbox);
+    this.db.prepare(`INSERT INTO assets (id,source_id,product,resolution,collection_id,remote_url,revision,path,bytes,sha256,status,metadata,created_at,downloaded_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata,
+      resolution=excluded.resolution,collection_id=excluded.collection_id,
+      path=COALESCE(excluded.path,assets.path),bytes=CASE WHEN excluded.path IS NOT NULL THEN excluded.bytes ELSE assets.bytes END,
+      sha256=COALESCE(excluded.sha256,assets.sha256),status=CASE WHEN excluded.path IS NOT NULL THEN excluded.status ELSE assets.status END,
+      downloaded_at=COALESCE(excluded.downloaded_at,assets.downloaded_at)`)
+      .run(asset.id, asset.sourceId, asset.product, asset.resolutionMeters || null, asset.collectionId || null,
+        asset.remoteUrl || asset.url || null, asset.revision || '', asset.path || null, asset.bytes || 0, asset.sha256 || null,
+        asset.path ? 'ready' : 'remote', JSON.stringify(asset), now(), asset.path ? now() : null);
+    const row = this.db.prepare('SELECT rowid FROM assets WHERE id=?').get(asset.id);
+    this.db.prepare('INSERT OR REPLACE INTO asset_bounds VALUES (?,?,?,?,?)').run(row.rowid, extent[0], extent[2], extent[1], extent[3]);
+    if (asset.path) this.db.prepare('INSERT OR IGNORE INTO asset_locations VALUES (?,?,?,?,?)').run(asset.id, asset.path, asset.bytes || 0, asset.sha256 || null, now());
+    return this.asset(asset.id);
+  }
+
+  decodeAsset(row) {
+    return row && { ...JSON.parse(row.metadata), id: row.id, sourceId: row.source_id, product: row.product,
+      remoteUrl: row.remote_url, resolutionMeters: row.resolution, collectionId: row.collection_id,
+      revision: row.revision, path: row.path, bytes: Number(row.bytes), sha256: row.sha256,
+      downloaded: row.status === 'ready', status: row.status, downloadedAt: row.downloaded_at };
+  }
+
+  asset(id) { return this.decodeAsset(this.db.prepare('SELECT * FROM assets WHERE id=?').get(id)); }
+
+  markDownloaded(id, result) {
+    const previous = this.asset(id);
+    const metadata = { ...previous, etag: result.etag ?? previous.etag, lastModified: result.lastModified ?? previous.lastModified };
+    this.db.prepare('UPDATE assets SET path=?,bytes=?,sha256=?,status=?,downloaded_at=?,metadata=? WHERE id=?')
+      .run(result.path, result.bytes, result.sha256, 'ready', now(), JSON.stringify(metadata), id);
+    this.db.prepare('INSERT OR REPLACE INTO asset_locations VALUES (?,?,?,?,?)').run(id, result.path, result.bytes, result.sha256, now());
+    return this.asset(id);
+  }
+
+  locations(id) { return this.db.prepare('SELECT path,bytes,sha256 FROM asset_locations WHERE asset_id=? ORDER BY created_at DESC').all(id); }
+
+  setting(key) { return this.db.prepare('SELECT value FROM settings WHERE key=?').get(key)?.value; }
+  setSetting(key, value) { this.db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run(key, String(value)); }
+  pendingJob() { const row = this.db.prepare("SELECT id FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1").get(); return row ? this.job(row.id) : null; }
+
+  queryAssets(input = {}) {
+    const clauses = [];
+    const parameters = [];
+    let query;
+    let join = '';
+    if (input.bbox || input.boundary) {
+      query = normalizeBoundary(input);
+      join = ' JOIN asset_bounds bounds ON bounds.rowid=assets.rowid';
+      clauses.push('bounds.west<=? AND bounds.east>=? AND bounds.south<=? AND bounds.north>=?');
+      parameters.push(query.bbox[2], query.bbox[0], query.bbox[3], query.bbox[1]);
+    }
+    if (input.sourceIds?.length) {
+      clauses.push(`source_id IN (${input.sourceIds.map(() => '?').join(',')})`);
+      parameters.push(...input.sourceIds);
+    }
+    if (input.localOnly !== false) clauses.push("assets.status='ready'");
+    if (input.courseId) {
+      clauses.push('assets.id IN (SELECT asset_id FROM course_assets WHERE course_id=?)');
+      parameters.push(input.courseId);
+    }
+    if (input.q) {
+      const search=String(input.q).replaceAll('\\','\\\\').replaceAll('%','\\%').replaceAll('_','\\_');
+      clauses.push("(assets.id LIKE ? ESCAPE '\\' OR json_extract(assets.metadata,'$.title') LIKE ? ESCAPE '\\')");
+      parameters.push(`%${search}%`,`%${search}%`);
+    }
+    const rows = this.db.prepare(`SELECT assets.* FROM assets${join}${clauses.length ? ' WHERE ' + clauses.join(' AND ') : ''} ORDER BY assets.rowid`).all(...parameters);
+    const assets = rows.map((row) => this.decodeAsset(row));
+    const selection = query || { queryBoundary: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]] } } };
+    return selectAssets(assets, selection, input);
+  }
+
+  saveCourse(input) {
+    if (!input.name || typeof input.name !== 'string' || input.name.length > 300) throw new HttpError(400, 'Course name is required (maximum 300 characters).');
+    if (!['CA', 'US'].includes(input.country)) throw new HttpError(400, 'country must be CA or US.');
+    const id = safeSegment(input.id || input.name).toLowerCase();
+    const existing = this.course(id);
+    const query = normalizeBoundary(input.boundary || input.bbox ? input : existing || input);
+    const latitude = (query.bbox[1] + query.bbox[3]) / 2;
+    const longitude = (query.bbox[0] + query.bbox[2]) / 2;
+    const course = { ...existing, ...input, id, boundary: query.boundary, bbox: query.bbox, latitude, longitude, bufferMeters: input.bufferMeters ?? existing?.bufferMeters ?? 500 };
+    this.db.prepare('INSERT INTO courses VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,country=excluded.country,province=excluded.province,latitude=excluded.latitude,longitude=excluded.longitude,metadata=excluded.metadata,updated_at=excluded.updated_at')
+      .run(id, input.name, input.country, input.province || input.region || null, latitude, longitude, JSON.stringify(course), now());
+    return this.course(id);
+  }
+
+  course(id) {
+    const row = this.db.prepare('SELECT metadata FROM courses WHERE id=?').get(id);
+    if (!row) return null;
+    const counts = this.db.prepare("SELECT COUNT(*) count FROM course_assets JOIN assets ON assets.id=asset_id WHERE course_id=? AND status='ready'").get(id);
+    return { ...JSON.parse(row.metadata), downloaded: Number(counts.count) > 0, assetCount: Number(counts.count) };
+  }
+
+  courses(search = '') {
+    const escaped = search.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+    return this.db.prepare("SELECT id FROM courses WHERE name LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\' ORDER BY name")
+      .all(`%${escaped}%`, `%${escaped}%`).map((row) => this.course(row.id));
+  }
+
+  linkAsset(courseId, id) {
+    if (courseId) this.db.prepare('INSERT OR IGNORE INTO course_assets VALUES (?,?)').run(courseId, id);
+  }
+
+  savePlan(plan) {
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO discovery_plans VALUES (?,?,?)').run(id, JSON.stringify(plan), now());
+    return { ...plan, id };
+  }
+
+  plan(id) { const row = this.db.prepare('SELECT metadata FROM discovery_plans WHERE id=?').get(id); return row ? { ...JSON.parse(row.metadata), id } : null; }
+
+  createJob(type, payload) {
+    const id = randomUUID();
+    const time = now();
+    this.db.prepare('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)').run(id, type, 'queued', JSON.stringify(payload), JSON.stringify({ completed: 0, total: 0, bytes: 0 }), null, time, time);
+    return this.job(id);
+  }
+
+  job(id) {
+    const row = this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id);
+    return row && { ...row, payload: JSON.parse(row.payload), progress: JSON.parse(row.progress), createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+
+  jobs(limit = 100) { return this.db.prepare('SELECT id FROM jobs ORDER BY created_at DESC LIMIT ?').all(limit).map((row) => this.job(row.id)); }
+
+  updateJob(id, changes) {
+    const current = this.job(id);
+    if (!current) throw new HttpError(404, 'Job not found.');
+    this.db.prepare('UPDATE jobs SET status=?,progress=?,error=?,updated_at=? WHERE id=?')
+      .run(changes.status ?? current.status, JSON.stringify(changes.progress ?? current.progress), changes.error ?? null, now(), id);
+    return this.job(id);
+  }
+
+  event(id, message, level = 'info') {
+    this.db.prepare('INSERT INTO job_events(job_id,time,level,message) VALUES (?,?,?,?)').run(id, now(), level, String(message).slice(0, 8000));
+  }
+
+  events(id, after = 0) { return this.db.prepare('SELECT * FROM job_events WHERE job_id=? AND id>? ORDER BY id LIMIT 1000').all(id, after); }
+
+  stats() {
+    const totals = this.db.prepare("SELECT COUNT(*) assets,COALESCE(SUM(bytes),0) bytes FROM assets WHERE status='ready'").get();
+    return { assets: Number(totals.assets), bytes: Number(totals.bytes), courses: Number(this.db.prepare('SELECT COUNT(*) count FROM courses').get().count),
+      remoteAssets: Number(this.db.prepare("SELECT COUNT(*) count FROM assets WHERE status='remote'").get().count),
+      activeJobs: Number(this.db.prepare("SELECT COUNT(*) count FROM jobs WHERE status IN ('queued','running')").get().count) };
+  }
+}

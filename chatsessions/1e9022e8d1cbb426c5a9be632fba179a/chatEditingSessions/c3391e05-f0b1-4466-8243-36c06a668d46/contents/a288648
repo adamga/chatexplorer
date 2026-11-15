@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp,mkdir,copyFile,readFile,writeFile,rm } from 'node:fs/promises';
+import dotenv from 'dotenv';
+import { configureInstallation,windowsServiceXml,systemdService } from '../scripts/configure-service.js';
+
+test('installer initializes separate state, secures remote binding, and preserves user configuration and data on upgrade',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-installer-'));
+  try{
+    const appDir=path.join(root,'program'),stateDir=path.join(root,'state'),storageRoot=path.join(root,'storage');
+    await mkdir(appDir);await copyFile('.env.example',path.join(appDir,'.env.example'));
+    const options={appDir,stateDir,storageRoot,port:3198,host:'0.0.0.0',platform:'win32'};
+    const first=await configureInstallation(options);const config=dotenv.parse(await readFile(first.envPath,'utf8'));
+    assert.equal(config.PORT,'3198');assert.equal(config.HOST,'0.0.0.0');assert.match(config.API_KEY,/^[a-f0-9]{64}$/);assert.equal(config.STORAGE_ROOT,storageRoot.replaceAll('\\','/'));
+    assert.match(config.GDALLOCATIONINFO_BIN,/runtime\/gis\/Library\/bin\/gdallocationinfo.exe$/);
+    const raw=path.join(storageRoot,'original.laz');await writeFile(raw,'raw-data');
+    const modified=(await readFile(first.envPath,'utf8')).replace('PORT="3198"','PORT="3197"')+'CUSTOM_SETTING="unchanged"\n';await writeFile(first.envPath,modified);
+    const second=await configureInstallation({...options,port:3123,host:'127.0.0.1'});assert.equal(second.preserved,true);assert.equal(second.port,3197);const upgraded=dotenv.parse(await readFile(first.envPath,'utf8'));assert.equal(upgraded.API_KEY,config.API_KEY);assert.equal(upgraded.CUSTOM_SETTING,'unchanged');assert.equal(upgraded.HOST,'0.0.0.0');assert.equal(await readFile(raw,'utf8'),'raw-data');
+    await assert.rejects(configureInstallation({...options,stateDir:path.join(appDir,'state')}),/outside the program/);
+    const service=await readFile(path.join(appDir,'TerrainServerService.xml'),'utf8');assert.match(service,/<user>LocalService<\/user>/);assert.match(service,/TERRAIN_CONFIG_PATH/);assert.ok(!service.includes(config.API_KEY));
+    assert.ok(!(await readFile(path.join(appDir,'installation.json'),'utf8')).includes(config.API_KEY));
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('service definitions quote installation paths and never require an API key in process arguments',()=>{
+  const windows=windowsServiceXml('C:\\Program Files\\TerrainServer','C:\\Data & Terrain');assert.match(windows,/Data &amp; Terrain/);assert.match(windows,/<stoptimeout>60sec/);assert.ok(!windows.includes('API_KEY'));
+  const linux=systemdService('/opt/terrain server 100%','/var/lib/terrainserver');assert.match(linux,/User=terrainserver/);assert.match(linux,/WorkingDirectory=\/opt\/terrain server 100%%\n/);assert.match(linux,/ExecStart="\/opt\/terrain server 100%%\/runtime\/node\/bin\/node"/);assert.match(linux,/ProtectSystem=full/);assert.match(linux,/TERRAIN_CONFIG_PATH=\/var\/lib\/terrainserver\/.env/);
+});

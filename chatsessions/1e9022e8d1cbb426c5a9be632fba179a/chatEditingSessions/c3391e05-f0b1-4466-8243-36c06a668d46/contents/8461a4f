@@ -1,0 +1,40 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { mkdtemp,rm,readFile } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { Catalog } from '../src/catalog.js';
+import { Network } from '../src/network.js';
+import { JobManager } from '../src/jobs.js';
+import { pointCloudPipeline } from '../src/processing.js';
+
+test('durable download jobs publish to the selected root and link courses',async()=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'terrain-job-'));
+  const content=Buffer.concat([Buffer.from('LASF'),Buffer.alloc(4096)]);
+  const server=createServer((request,response)=>{response.writeHead(200,{'Content-Length':content.length,ETag:'"fixture"'});response.end(content);});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const catalog=new Catalog(':memory:');
+  const config={storageRoot:root,downloadConcurrency:2,downloadRetries:0,downloadIdleTimeoutMs:5000,requestTimeoutMs:5000,minFreeDiskGb:0,allowPrivateDownloadHosts:true};
+  const network=new Network(config);const manager=new JobManager(config,catalog,network,{},{});
+  try{
+    const course=catalog.saveCourse({id:'test-course',name:'Test Course',country:'CA',province:'ON',bbox:[-80,43,-79,44]});
+    const asset=catalog.saveAsset({sourceId:'test',product:'point-cloud',extension:'laz',bbox:course.bbox,remoteUrl:`http://127.0.0.1:${server.address().port}/tile.laz`});
+    const settled=once(manager,'settled');const job=manager.enqueue('download',{assetIds:[asset.id],courseId:course.id});
+    await settled;assert.equal(catalog.job(job.id).status,'completed');
+    const saved=catalog.asset(asset.id);assert.ok(saved.path.startsWith(root));assert.equal(saved.etag,'"fixture"');assert.deepEqual(await readFile(saved.path),content);
+    assert.equal(catalog.course(course.id).assetCount,1);
+    const secondRoot=path.join(root,'second');const second=once(manager,'settled');const copied=manager.enqueue('download',{assetIds:[asset.id],courseId:course.id,storageRoot:secondRoot});
+    await second;assert.equal(catalog.job(copied.id).status,'completed');assert.equal(catalog.locations(asset.id).length,2);assert.deepEqual(await readFile(saved.path),content);
+  }finally{await manager.stop();await network.close();catalog.close();await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});}
+});
+
+test('PDAL pipeline merges all input streams and distinguishes ground from surface',()=>{
+  const options={resolutionMeters:0.5};const extent=[-79.5,43.5,-79.49,43.51];
+  const ground=pointCloudPipeline(['a.laz','b.laz'],extent,'dtm.tif',options).pipeline;
+  assert.deepEqual(ground.find(stage=>stage.type==='filters.merge').inputs,['projected_0','projected_1']);
+  assert.equal(ground.find(stage=>stage.type==='filters.expression').expression,'Classification == 2');
+  const surface=pointCloudPipeline(['a.laz'],extent,'dsm.tif',{...options,surface:'dsm'}).pipeline;
+  assert.equal(surface.at(-1).output_type,'max');assert.match(surface.find(stage=>stage.type==='filters.expression').expression,/!= 7/);
+});

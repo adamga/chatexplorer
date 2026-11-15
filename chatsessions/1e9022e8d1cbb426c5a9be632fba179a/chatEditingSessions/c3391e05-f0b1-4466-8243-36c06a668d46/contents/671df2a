@@ -1,0 +1,271 @@
+# TerrainServer
+
+Node.js terrain acquisition and local-only serving for Canada and the United States. Select government providers, draw/import a WGS84 boundary or enumerate a whole source, review the acquisition plan, and store immutable files at your chosen destination. A local Leaflet control screen, REST API, STAC search, and Scorecarder-compatible catalog expose the downloaded data.
+
+## Install On A Server
+
+Ready-to-run packages:
+
+- Windows/x64: [dist/TerrainServer-1.0.0-windows-x64-setup.exe](dist/TerrainServer-1.0.0-windows-x64-setup.exe).
+- Linux/x64: [dist/TerrainServer-1.0.0-linux-x64-setup.run](dist/TerrainServer-1.0.0-linux-x64-setup.run).
+- Companion GIS source bundles: [dist/TerrainServer-1.0.0-windows-x64-gis-sources.tar.gz](dist/TerrainServer-1.0.0-windows-x64-gis-sources.tar.gz) and [dist/TerrainServer-1.0.0-linux-x64-gis-sources.tar.gz](dist/TerrainServer-1.0.0-linux-x64-gis-sources.tar.gz).
+
+Each installer contains Node.js 24 LTS, production JavaScript dependencies, GDAL 3.13.2, PDAL 2.10.2, CRS data, and original third-party license notices. Installation is offline; only provider discovery and new downloads need Internet access. Each artifact has an adjacent `.sha256` checksum. Installers are **unsigned**; production signing requires your own code-signing certificate. Distribute the applicable GIS source companion with the installer when redistributing its copyleft components. Original package/source checksums, licenses, and recipes are included in `third-party/gis`, `THIRD-PARTY-GIS.json`, and `BUILD-MANIFEST.json` inside the installed program directory.
+
+Windows requires **Windows 11 or Windows Server 2022+**, x64, with the OS-maintained .NET Framework 4.6.1+ and Universal CRT. Linux requires x86_64/glibc and standard `bash`, `tar`, `awk`, and `coreutils`; Ubuntu 22.04 was verified. Alpine/musl and ARM are not packaged. Confirm native binary compatibility on other distributions before deployment.
+
+### Windows
+
+Run the setup executable on the target server. Choose **all users** for a Windows service, then select the program directory, persistent state directory, default terrain storage, port (default **3123**), bind address, and authentication. Defaults are:
+
+```text
+C:\Program Files\TerrainServer                 program and bundled runtimes
+C:\ProgramData\TerrainServer\.env             protected service configuration
+C:\ProgramData\TerrainServer\catalog           SQLite catalog
+C:\ProgramData\TerrainServer\logs              rotated service logs
+C:\ProgramData\TerrainServer\terrain-data      default terrain destination
+```
+
+The optional `TerrainServer` Windows service uses the unprivileged **LocalService** account, automatic delayed startup, restart-on-failure, and rotated logs. The installer grants that account access to the selected dedicated state/storage directories. A UNC share requires an explicitly configured domain/service account with share and filesystem permissions; LocalService is not an authenticated network-share identity. No firewall ports are opened automatically.
+
+The **current user** install mode requires no elevation and creates a foreground-launch shortcut, not a system service. Unattended current-user installation example:
+
+```powershell
+.\dist\TerrainServer-1.0.0-windows-x64-setup.exe /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="C:\TerrainServer\Program" /STATEDIR="C:\TerrainServer\State" /STORAGEROOT="D:\TerrainData" /PORT=3123 /BIND=127.0.0.1
+```
+
+For unattended service installation, an administrator uses `/ALLUSERS` instead of `/CURRENTUSER`. `/REQUIREKEY=1` generates a key even for loopback. Remote bindings always generate a key on initial installation. Retrieve it locally from the protected `.env`; setup never places it in command arguments, installer logs, or catalog URLs. Post-install configuration failures return a nonzero setup exit code; inspect the Inno setup log and state-directory logs.
+
+Service administration, run by the target-server administrator:
+
+```powershell
+Get-Service TerrainServer
+Restart-Service TerrainServer
+Stop-Service TerrainServer
+```
+
+Rerun Setup in the **same program directory and install mode** to upgrade. Existing `.env` settings, API key, storage roots, catalog, and terrain files take precedence over new wizard defaults. Bundled GIS paths are refreshed. Changing port/authentication on an existing installation requires editing its `.env` and restarting the service. Uninstall through Windows Apps/Programs; program/service files are removed while persistent state and terrain data remain.
+
+### Linux
+
+Administrator installation:
+
+```bash
+chmod +x TerrainServer-1.0.0-linux-x64-setup.run
+sudo ./TerrainServer-1.0.0-linux-x64-setup.run --app-dir /opt/terrainserver --state-dir /var/lib/terrainserver --storage-root /srv/terrain-data --port 3123 --bind 127.0.0.1
+sudo systemctl status terrainserver
+sudo journalctl -u terrainserver
+```
+
+The installer creates a dedicated `terrainserver` system account and a hardened systemd unit with restart-on-failure. Configuration lives at `<state-dir>/.env`, the catalog at `<state-dir>/catalog/catalog.sqlite`, and processing temporary files under `<state-dir>/tmp`. Use dedicated paths outside the program directory and ensure the service account can access existing terrain files and parent directories. The systemd unit protects home directories; `/opt`, `/var/lib`, and mounted storage under `/srv` or `/mnt` are appropriate server locations.
+
+A non-privileged foreground install uses `--no-service` with user-owned paths:
+
+```bash
+bash TerrainServer-1.0.0-linux-x64-setup.run --no-service --app-dir "$HOME/.local/lib/terrainserver" --state-dir "$HOME/.local/share/terrainserver" --port 3123
+TERRAIN_CONFIG_PATH="$HOME/.local/share/terrainserver/.env" "$HOME/.local/lib/terrainserver/runtime/node/bin/node" "$HOME/.local/lib/terrainserver/src/server.js"
+```
+
+Use `--bind 0.0.0.0` for remote binding or `--require-key` for loopback authentication. Put remote access behind TLS and firewall restrictions; TLS certificates/reverse-proxy provisioning are not part of these installers. Preserve the public Host/protocol correctly when configuring the proxy and absolute catalog URLs. Browser origins must be explicitly allowed in `CORS_ORIGINS`.
+
+Upgrade by rerunning the same installer with the same program/state directories. Existing configuration and terrain data are preserved. Remove a system installation with `sudo bash /opt/terrainserver/installer/linux/uninstall.sh`; for foreground installations use that installation's uninstall script with `--no-service`. Uninstall retains the state, catalog, terrain data, and system account. Back up `.env` and SQLite before upgrades.
+
+### Build And Verify Packages
+
+Windows build needs Node.js 24+, Inno Setup 6.7+/7, and a working conda-forge GIS environment. Build-time downloads are verified against published package/archive SHA256 values; WinSW is pinned. Inno Setup's own licensing applies to compiler use.
+
+```powershell
+npm ci --no-audit --no-fund
+npm run build:installer -- --gis-env C:\Path\To\GIS-Environment
+npm run test:installer -- --gis-env C:\Path\To\GIS-Environment
+```
+
+Linux builds bootstrap Node and micromamba into a user-owned cache without changing the shell or installing system packages:
+
+```bash
+bash installer/linux/build.sh
+$HOME/.cache/terrainserver-builder/bootstrap/node-v24.22.2-linux-x64/bin/node scripts/test-installer.js
+```
+
+`GIS_ENV_ROOT` can supply an existing Linux environment; otherwise the bootstrap freshly resolves the pinned GDAL/PDAL versions from conda-forge. `TERRAIN_BUILD_DIR`, `NODE_VERSION`, `ISCC_PATH`, and `--iscc` customize build locations/tools. `TERRAIN_CONFIG_PATH` selects the installed service's external `.env`; relative data paths resolve beside that file, and it is authoritative over inherited environment values.
+
+Real Windows current-user and Ubuntu 22.04 foreground install/upgrade/uninstall lifecycles were tested, including moved-path Node/SQLite/Sharp/GIS operation, LAZ generation, elevation/grid queries, authentication, Range downloads, and raw-data preservation. Generated systemd unit syntax was verified. **Privileged Windows service registration and root systemd registration were not executed on this development machine.** Validate those on the target administrator-managed server; no existing system service was changed here.
+
+## Run
+
+Requires Node.js **24+**. There is no transpilation step; the server runs directly from the JavaScript source.
+
+```powershell
+npm ci --no-audit --no-fund
+npm run check
+npm test
+npm start
+```
+
+The control screen is **http://127.0.0.1:3123/** and interactive API documentation is **http://127.0.0.1:3123/docs**.
+
+The current local [.env](.env) is configured for `C:/Repos/lidarserver/terrain-data` and the existing GDAL/PDAL installation under `C:/Repos/gcsdev/GCS-Dev/Scorecarder/setups/green-tools-env`. That installation is reused without modifying Scorecarder. For another machine, use [.env.example](.env.example) as the configuration reference and adjust the executable and storage paths.
+
+GDAL and PDAL are required for terrain generation and some vector indexes. The GUI's **Repository Settings** shows tool availability. Tools must include GeoTIFF, GeoPackage, Shapefile, LAS/LAZ, and projection support. `GIS_ENV_ROOT` supplies the library, GDAL data, and PROJ paths for a contained environment; projection-network access remains disabled.
+
+Windows browser tests use installed Microsoft Edge. Set `PLAYWRIGHT_CHANNEL` in `.env` for another installed browser channel. On other platforms, install the bundled test browser with `npx playwright install chromium`. Real GIS tests require the configured tools; unavailable toolchains are reported rather than mocked as successful processing.
+
+## First Trial
+
+The repository includes **Ontario Sample Area**, a small, explicitly labeled test area near Toronto, not a claimed golf-course boundary. A real native 0.5 m Ontario DTM was acquired through the GUI. DTM, contours at 0.5/1/2 m intervals, hillshade, and slope were generated locally.
+
+1. Open **Repository** to inspect or download the local files.
+2. Open **Courses**, then use the map icon beside Ontario Sample Area to select its boundary.
+3. In **Acquire**, choose sources, products, resolutions, delivery/collection options, and a destination. **Discover Files** creates a reviewable plan without downloading terrain files.
+4. Review sizes, native grids, coverage, and provider warnings, then download all or selected files. Job details show progress, logs, cancellation, and retry controls.
+5. Use the terrain-generation icon in **Courses** to create new, versioned outputs from complete local inputs.
+
+On an empty installation, select **Ontario sample area** from the area selector, then save it as a course. Its zero-meter buffer is intentional for a very small trial. Normal course buffers default to 500 m and can be configured up to 10,000 m.
+
+The map uses bundled country geometry by default. OpenStreetMap is an optional online basemap. Provider discovery/refresh requires Internet access, but existing terrain downloads, previews, elevation/grid queries, and catalogs never contact government services as a fallback.
+
+## Sources And Precision
+
+| Source | Automatic open-data delivery |
+| --- | --- |
+| Ontario GeoHub | Clipped native 0.5 m DTM exports, DTM/DSM packages, classified point-cloud tile links |
+| NRCan CanElevation | HRDEM project and national mosaics, Arctic DEM, CDEM, MRDEM, classified point clouds |
+| Prince Edward Island | 2020 native 1 m DTM tiles, federal DTM/DSM surveys, federal point clouds |
+| LidarBC | Provincial DEM/DSM and point-cloud indexes; actual per-tile spacing is retained |
+| Quebec | Provincial native MNT/DTM tile index plus federal DSM/point-cloud coverage |
+| Alberta | Open federal CanElevation coverage in Alberta |
+| Nova Scotia | Open federal CanElevation coverage in Nova Scotia |
+| Saskatchewan | Open federal CanElevation coverage in Saskatchewan |
+| USGS 3DEP | LPC, 1 m/seamless DEMs, published arc-second DEMs, Alaska products, contours |
+
+Alberta/NS/SK account-gated, paid, or unverified provincial delivery is **not** presented as anonymous open downloads. Some Ontario point-cloud tiles require ordering. Coverage is uneven; provider failures and missing anonymous links are recorded in the acquisition plan. Custom ArcGIS, STAC, and vector-index sources can be registered through the GUI or `POST /api/sources` using verified endpoints and attribution.
+
+`GET /api/sources/:id/options` exposes products, collections, formats, delivery modes, known native raster grids, and provider export options. Refreshing provider catalogs adds newly published collection metadata. Provincial choices distinguish native tile grids from dataset scale labels, such as BC's 1:2500 index.
+
+- `best`: prefer the finest known native grid per source/product, retaining coarser tiles needed to fill coverage gaps and point clouds with unknown spacing.
+- `all`: retain all published resolutions, deliveries, and survey variants matching the selected products and collections.
+- `native`: retain native grids without inventing finer survey precision. Default delivery preferences still apply unless you select collections/delivery explicitly.
+- A numeric `resolution`: select a matching native grid; Ontario clipped exports can also request a custom output cell. Finer output cells are explicitly marked **resampled**, not new survey precision.
+
+Raw point-cloud density is not a raster cell size. Unknown spacing/density remains unknown. Meter-grid and angular-resolution products are distinguished. Terrain processing can request arbitrary positive output cells within the configured pixel limit; finer cells interpolate existing observations. Elevation responses retain declared units and vertical-datum provenance. Unknown units are returned as `source units`; no vertical-datum harmonization or inferred unit conversion is performed. `zScale` can explicitly scale point-cloud heights.
+
+Whole-source Ontario acquisition defaults to native packages. Clipped ImageServer exports require an area boundary. Whole-source jobs can be extremely large; inspect known bytes and unknown-size counts before downloading. `MAX_DISCOVERY_ASSETS` and pixel limits fail explicitly instead of silently truncating enumeration or coarsening data. Raise these limits deliberately for larger acquisitions.
+
+## Storage And Jobs
+
+Change the default location through the folder shortcut or Repository Settings. It is persisted to `.env`; all prior roots remain registered and their files are preserved. Each job snapshots its destination. The acquisition form can override the destination for that job without changing the default. Use an absolute local, external-drive, or UNC path with write permission.
+
+```text
+terrain-data/
+  canada|usa/
+    province-or-state|national/
+      course-id|repository/
+        metadata.json
+        course_boundary.geojson
+        lidar/raw/<source>-<immutable-asset-id>.laz
+        dem/raw/<source>-<immutable-asset-id>.tif
+        dem/<processing-job-id>/dtm.tif
+        contours/<processing-job-id>/...
+        hillshade/<processing-job-id>/...
+        slope/<processing-job-id>/...
+        generated/jobs/<job-id>/...
+        ai/terrain-package-<id>.json
+  .indexes/<source>/<revision>/...
+```
+
+SQLite stores RTree footprints, metadata, course associations, source options, discovery plans, jobs, logs, and registered file locations. Keep the catalog on a reliable local disk; terrain files may reside on other registered volumes. Back up the catalog and `.env` with the raw data, using a SQLite-aware backup or stopping the server before copying the database and its journal files.
+
+Downloads stream to `.part` files, resume with ETag/Last-Modified and verified range responses, validate signatures/lengths and SHA-256, and publish without overwriting an existing raw path. Provider revisions receive distinct IDs. Copying a catalog asset to another destination retains its previous location. A disconnected volume produces an explicit local-file error; it does not trigger an online fallback.
+
+One durable top-level job runs at a time; downloads use the configured worker concurrency. Running jobs become queued after restart, completed raw files remain intact, and retries resume partial transfers. Cancellation preserves completed and partial files. Interrupted processing may leave working files for inspection; a retry creates a new versioned processing job. Archive extraction preserves the raw ZIP and enforces traversal and uncompressed-size limits. Proprietary ZLAS is downloadable but must be converted externally before processing.
+
+Monthly checks refresh provider metadata and compare validators on acquired assets. They **do not automatically download changed terrain**. `POST /api/jobs/updates` with `downloadChanged: true` explicitly queues changed files. Missing validators are reported as unknown freshness.
+
+Large raw files are streamed; previews use internal overviews or bounded local GDAL windows. Course processing is spatially/pixel bounded, not a whole-country processing batch. This implementation is designed for large repositories, but a 20 TB acquisition/storage stress test has not been performed. Monitor disk space, native-tool memory, and provider limits during large deployments. Catalog byte totals count each current asset once; replicas, index caches, and intermediate working files are additional disk usage.
+
+## REST Examples
+
+Swagger contains request schemas and the full endpoint list. Core routes include:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/sources` and `/:id/options` | Cached source metadata and native options |
+| `POST /api/discover` | Queue discovery; inspect job result `planId` |
+| `GET /api/discovery/:id` | Paginated plan, warnings, native metadata, and all asset IDs |
+| `POST /api/downloads` | Download a plan or selected asset IDs |
+| `POST /api/acquire` | Explicit discovery and download in one durable job |
+| `GET /api/jobs/:id` and `/events` | Status, progress, result, and cursor-based logs |
+| `GET/POST /api/courses` | Search/register WGS84 course boundaries |
+| `GET /api/course/:id/terrain` | Local DEM/DTM/DSM, contours, hillshade, and slope URLs |
+| `GET/POST /api/terrain/query` | Local assets filtered by boundary, source, product, grid, or course |
+| `GET /api/assets/:id/download.tif` | Local byte-range/ETag streaming; use the actual extension |
+| `POST /api/terrain/elevation` | Up to 1,000 WGS84 `[longitude, latitude]` points |
+| `GET /api/terrain/grid?assetId=...` | Up to 512x512 cells, north-to-south, WGS84 cell centers |
+| `POST /api/jobs/process` | Generate local course/area terrain products |
+| `POST /api/course/:id/package` | Export a persisted AI/hole package with local asset URLs |
+
+PowerShell discovery example:
+
+```powershell
+$body = @{
+  sourceIds = @('ontario')
+  products = @('dtm')
+  bbox = @(-79.52, 43.64, -79.519, 43.641)
+  bufferMeters = 0
+  resolution = 'best'
+  delivery = 'export'
+  courseId = 'ontario-sample-area'
+} | ConvertTo-Json
+$job = Invoke-RestMethod http://127.0.0.1:3123/api/discover -Method Post -ContentType application/json -Body $body
+Invoke-RestMethod "http://127.0.0.1:3123/api/jobs/$($job.id)"
+```
+
+Once that job is completed, use its `progress.result.planId` in:
+
+```json
+{
+  "planId": "<completed-plan-id>",
+  "storageRoot": "D:/TerrainData",
+  "courseId": "ontario-sample-area",
+  "processAfterDownload": true,
+  "processing": {
+    "products": ["dtm", "contours", "hillshade", "slope"],
+    "contourIntervals": [0.5, 1, 2]
+  }
+}
+```
+
+Send that body to `POST /api/downloads`. Incomplete plans are refused unless you explicitly set `allowPartial: true`. Asset query/plan pages use `offset` and `limit` (maximum 1,000); responses include `total` and `nextOffset`. Bboxes accept arrays, comma-separated strings, or Scorecarder's `{minLng,minLat,maxLng,maxLat}` shape. Polygon/MultiPolygon holes are respected. Antimeridian-crossing requests must be split.
+
+Packages can optionally reference a **previously local** satellite asset and include hole, hazards, centerline, or green geometry. There is no satellite acquisition or golf-feature AI inference engine. Packages expose the available terrain and supplied references, not invented geometry.
+
+## Scorecarder Integration
+
+Scorecarder's existing `green-map-worker.js` consumes compatible asset fields and URL extensions. No Scorecarder files were changed. Use its existing configuration hooks:
+
+```dotenv
+SCORECARDS_GREEN_MAP_LIDAR_SOURCE=manual
+SCORECARDS_GREEN_MAP_ONTARIO_DTM_ENABLED=false
+SCORECARDS_GREEN_MAP_ONTARIO_DTM_PER_GREEN_ENABLED=false
+SCORECARDS_GREEN_MAP_ARCGIS_QUERY_URLS=http://127.0.0.1:3123/api/scorecarder/query
+```
+
+Remove other remote ArcGIS/STAC hooks, tile URLs, and old remote manifests when you require the consumer to remain local-only. `manual` avoids its built-in government source discovery; disabling both Ontario flags avoids direct ImageServer exports. The local ArcGIS hook accepts the worker's WGS84 envelope and returns `downloadUrl`, `source`, `title`, `bbox`, `extension`, and `cellSizeMeters`, without a transfer-limit truncation.
+
+Alternative hooks:
+
+- Elevation-only local STAC: `SCORECARDS_GREEN_MAP_STAC_ENDPOINTS=http://127.0.0.1:3123/api/scorecarder/stac` with optional source collections such as `ontario,nrcan,pei,bc,quebec,usgs-3dep,derived`. The general `/api/stac` also contains visualization products and is not the recommended elevation-consumer endpoint.
+- Manifest: obtain `GET /api/scorecarder/manifest?bbox=...` or `GET /api/course/:id/manifest`, follow pagination when applicable, and pass the JSON to its existing `SCORECARDS_GREEN_MAP_LIDAR_MANIFEST_JSON` or manifest-file hook. The hook expects JSON/file contents, not a remote manifest URL.
+
+Acquire the requested course/green area first. The consumer receives only complete local processable TIFF/LAS/LAZ assets; ZIP/ZLAS/IMG can remain raw and need extraction/conversion as appropriate. Finer Scorecarder output cells do not imply finer source surveys.
+Compatibility manifests, ArcGIS queries, and the Scorecarder STAC profile include DTM/DEM/DSM elevations and point clouds, never hillshade/slope/contour values. Visualization products remain available in the ordinary terrain API and general STAC catalog.
+
+The existing consumer hooks do not add TerrainServer Bearer headers automatically. The default loopback/no-key configuration works directly. When enabling `API_KEY`, add authenticated requests in the consumer or use a trusted authenticated integration layer; do not put an API key into a catalog URL. Direct browser clients also need their actual origin added to `CORS_ORIGINS`. Server-to-server requests are not subject to browser CORS.
+
+## Security And Operations
+
+Loopback binding is the default. A non-loopback `HOST` requires `API_KEY`, and authenticated callers can browse storage paths and queue downloads, so treat that key as administrative access. Bind behind TLS and firewall restrictions for remote use. The GUI keeps the key only in page memory; downloaded-file tickets expire after ten minutes. API definition/health and static frontend assets are public, but repository data/settings require Bearer authentication when enabled.
+
+Download destinations are checked against registered roots and real paths. Public-source network requests reject private/reserved IPs, unexpected hosts/ports, embedded credentials, and unsafe redirects, with validated DNS connection addresses. `DOWNLOAD_ALLOWED_HOSTS` extends the government/public-infrastructure allowlist. `ALLOW_PRIVATE_DOWNLOAD_HOSTS` is an explicit development/trusted-internal exception; do not enable it for untrusted callers. Native tools are spawned directly without a shell. Provider content is data, not executable instructions.
+
+Keep provider attribution with reused raw and derived data. `.env`, the terrain/index files, catalogs, dependencies, and logs are ignored by Git. Do not delete registered raw files to free space without accounting for dependent course/derived manifests. Shut down with Ctrl+C so the current job is persisted for restart.
