@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { replay, applyTextEdits, readJsonLines, discover, loadSession, detailNode, summarizeNode, storyPage } from '../src/parser.js';
@@ -175,9 +175,13 @@ test('labels missing edit blobs and does not fabricate a before/after pair', asy
   assert.equal(edit.after, undefined);
   assert.equal(detailNode(edit).diff, undefined);
 });
-test('reconstructs the supplied multi-source session completely', async () => {
+test('reconstructs the supplied multi-source session completely', async (t) => {
   const root = path.resolve('chatsessions\\1e9022e8d1cbb426c5a9be632fba179a');
   const file = path.join(root, 'chatSessions', 'c3391e05-f0b1-4466-8243-36c06a668d46.jsonl');
+  if (!(await stat(file).catch(() => null))) {
+    t.skip('Uncommitted local sample chatsessions fixture is not present on disk');
+    return;
+  }
   const original = await readFile(file);
   const session = await loadSession(file);
   assert.equal(session.requests.length, 13);

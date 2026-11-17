@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101413">
+  <title>Summary Operation Log · Chronicle</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23c7f5a1'/%3E%3Cpath d='M21 10a8 8 0 1 0 0 12M11 16h12' fill='none' stroke='%23101413' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/icons.js"></script>
+  <script defer src="/log.js"></script>
+</head>
+<body class="log-popup-body">
+  <div class="log-popup-shell">
+    <header class="log-popup-header">
+      <div>
+        <div class="eyebrow accent" id="log-eyebrow">SUMMARY OPERATION LOG</div>
+        <h1 id="log-title">Loading operation log...</h1>
+        <div class="log-popup-meta" id="log-meta"></div>
+      </div>
+      <div class="log-popup-actions">
+        <button type="button" class="button primary" id="copy-log-button"><i data-lucide="copy"></i> Copy log</button>
+        <button type="button" class="button" id="close-log-button"><i data-lucide="x"></i> Close</button>
+      </div>
+    </header>
+    <div class="log-error-banner" id="log-error-banner" role="alert" hidden></div>
+    <main class="log-popup-main" id="log-entries" aria-live="polite">
+      <div class="loading-state"><span class="spinner"></span> Reading operation log...</div>
+    </main>
+    <footer class="log-popup-footer">
+      <span id="log-count">0 entries</span>
+      <span id="log-output-path" class="muted"></span>
+    </footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

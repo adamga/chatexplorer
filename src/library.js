@@ -4,11 +4,23 @@ import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
 import { discover, loadSession, sessionKey } from './parser.js';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const indexerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'indexer.js');
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function signatureOf(file) {
+  if (path.basename(file).toLowerCase() === 'events.jsonl') {
+    const sessionDir = path.dirname(file);
+    const parts = [
+      file,
+      path.join(sessionDir, 'workspace.yaml'),
+      path.join(sessionDir, 'vscode.metadata.json'),
+      path.join(sessionDir, 'plan.md')
+    ];
+    const stats = await Promise.all(parts.map((part) => stat(part).catch(() => null)));
+    if (!stats[0]?.isFile()) throw new Error('Session file is missing.');
+    return { size: stats[0].size, signature: stats.map((info) => info ? `${info.size}:${info.mtimeMs}` : '-').join('|') };
+  }
   const name = path.basename(file).replace(/\.(jsonl|json)$/i, '');
   const root = path.basename(path.dirname(file)).toLowerCase() === 'chatsessions' ? path.dirname(path.dirname(file)) : path.dirname(file);
   const parts = [file,
@@ -22,9 +34,18 @@ async function signatureOf(file) {
 }
 
 function placeholder(entry) {
+  const isAgentEvents = path.basename(entry.file).toLowerCase() === 'events.jsonl';
+  if (isAgentEvents) {
+    const sessionId = path.basename(path.dirname(entry.file));
+    return {
+      id: entry.id, sessionId, sessionFormat: 'agent-host', clientName: 'copilot-agent',
+      title: sessionId, file: entry.file, size: entry.size,
+      workspaceName: 'Agent sessions', workspacePath: '', stats: null, warnings: [], modelTimeline: [], sources: {}
+    };
+  }
   const name = path.basename(entry.file);
   const workspaceDir = path.basename(path.dirname(path.dirname(entry.file)));
-  return { id: entry.id, sessionId: name.replace(/\.(jsonl|json)$/i, ''), title: name, file: entry.file, size: entry.size,
+  return { id: entry.id, sessionId: name.replace(/\.(jsonl|json)$/i, ''), sessionFormat: 'vscode-chat', clientName: 'vscode-chat', title: name, file: entry.file, size: entry.size,
     workspaceName: workspaceDir, workspacePath: '', stats: null, warnings: [], modelTimeline: [], sources: {} };
 }
 

@@ -4,10 +4,9 @@ A local-only Node.js application for exploring raw VS Code chat history. A promp
 
 ## Run
 
-Requires **Node.js 24 or newer**.
+Requires **Node.js 22 or newer** — **zero runtime npm package dependencies** (runs directly on built-in Node.js modules with no `npm install` needed for the web server or unit tests).
 
 ```powershell
-npm ci
 npm start
 ```
 
@@ -23,7 +22,8 @@ npm start -- --path "C:\Users\you\AppData\Roaming\Code\User\workspaceStorage\wor
 
 Accepted inputs:
 
-- A workspace storage hash folder, or a parent containing workspace folders.
+- A VS Code workspace storage hash folder, or a parent `workspaceStorage` folder (`%APPDATA%\Code\User\workspaceStorage`).
+- An Agent Host / Copilot CLI `session-state` folder (`%USERPROFILE%\.copilot\session-state`), an individual session UUID directory, `events.jsonl`, or `workspace.yaml`.
 - A `chatSessions` folder (also `emptyWindowChatSessions` / `transferredChatSessions`).
 - A persisted session `.jsonl` or older `.json` file.
 - `state.vscdb`, as a convenient pointer to its sibling `chatSessions` folder. Chronicle does not extract chat messages from the database itself.
@@ -42,7 +42,7 @@ npm run pack      # unpacked app only, in dist\win-unpacked
 
 - The installer is per-user (no admin needed), lets you pick the install folder, and adds Start menu and desktop shortcuts.
 - The backend runs in an Electron **utility process** on a random loopback port. If it crashes, it restarts automatically on the same port and the window reloads. Search indexes are cached in `%APPDATA%\Chronicle\index-cache`.
-- **Open session** gains native **Folder** / **File** pickers, which start in `%APPDATA%\Code\User\workspaceStorage`. `Ctrl+O` also opens the dialog.
+- **Open session** (`Ctrl+O`) and **Agent sessions** (`Ctrl+Shift+O`) provide separate open browsers pre-filled and defaulted to `%APPDATA%\Code\User\workspaceStorage` and `%USERPROFILE%\.copilot\session-state` respectively.
 - Paths passed on the command line (`Chronicle.exe "C:\...\workspace-hash"`) are imported; a second launch forwards its paths to the running window.
 - Imported paths are remembered in `%APPDATA%\Chronicle\settings.json`. The bundled sample is not included in the installer. Uninstalling keeps these settings.
 - The renderer is sandboxed with context isolation and no Node access. External links open in your default browser.
@@ -58,11 +58,12 @@ npm start
 
 ## Explore
 
-- **Library:** sessions grouped by workspace, newest first, with prompt and tool counts, models, and size. Sessions with no prompts (about 40% of a typical storage folder) are hidden and counted. A progress bar shows background indexing. The sidebar filter narrows sessions by title or workspace. Click a session to drill in; **← Library** returns.
+- **Library:** sessions from both VS Code `workspaceStorage` and Agent Host / Copilot CLI (`.copilot\session-state`) grouped by workspace, sortable by **Date** (newest/oldest) or **Name** (A→Z / Z→A), with prompt and tool counts, models, and size. Sessions with no prompts are hidden and counted. A progress bar shows background indexing. The sidebar filter narrows sessions by title or workspace. Click a session to drill in; **← Library** returns.
 - **Global search (`Ctrl+Shift+F`):** searches prompts, responses, reasoning, tool titles, arguments, and results, plus edits, across **all sessions** or **this session**. All terms must match, case-insensitive. Each result shows a one-line highlighted blurb. Clicking it opens that session at the exact entry with matches highlighted, and **← Results** returns to the list.
 - **Left:** prompts at the first level; responses, reasoning blocks, tools, edits, context, and source events beneath their prompt. Expand tool items for linked execution events.
 - **Right:** selecting a prompt opens its **Conversation story**, with replies, saved reasoning, summaries, tool activity, and edits inline rather than a list of links. More items load automatically as you scroll. Original transcript/debug groups expand in place to avoid duplicating the primary narrative.
 - **Read full session:** the book icon in the rail, or the overview button, reads every prompt and its activity as one continuous story. The tree remains available for detailed inspection. **Raw record** preserves fields without a dedicated renderer.
+- **Create session summary:** beside **Read full session** on the session overview, generates a compact, comprehensive `<session-name>-summary.md` handoff document using your configured **Microsoft Foundry Agent** so another engineer or agent on a separate machine can resume the task without prior chat history. Includes a `.env`-backed configuration dialog with connectivity testing, a live progress dialog, and a popup operation log window with clipboard copy support. See [`agentconfig/`](./agentconfig/README.md) for Foundry Portal agent prompt and Service Principal setup instructions.
 - **Session overview:** counts, source availability, conversation navigation, and model timeline. Expand its chevron for saved file snapshots, model catalog, editing state, workspace metadata, and original mutation records.
 - **Session filter:** inside a session, the sidebar search filters the tree using complete recorded payloads, not just visible titles. Filters narrow messages, tools, edits, or thoughts.
 - **Model timeline:** detects changes between request model IDs; each prompt retains its recorded model/configuration. Subagent model metadata stays with its tool.
@@ -101,7 +102,7 @@ Implementation was checked against the sample and Microsoft's upstream source, r
 
 ## Development
 
-Plain browser JavaScript and CSS, an Express server, and an isolated parser. No bundler or build step.
+Zero runtime npm dependencies: plain browser JavaScript, SVG icons, GFM Markdown + HTML sanitizer + syntax highlighter, a native `node:http` server, a pure-JS Myers line-diff engine, and an isolated session parser. No bundler or build step.
 
 ```powershell
 npm run dev

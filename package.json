@@ -1,34 +1,25 @@
 {
   "name": "chat-explorer",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "A local, read-only observatory for persisted VS Code chat sessions.",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node --max-old-space-size=8192 src/server.js",
     "dev": "node --max-old-space-size=8192 --watch src/server.js",
     "test": "node --test",
-    "check": "node --check src/parser.js && node --check src/server.js && node --check src/library.js && node --check src/indexer.js && node --check public/app.js && node --check electron/main.mjs && node --check electron/preload.cjs && node --check electron/backend.mjs",
+    "check": "node --check src/diff.js && node --check src/parser.js && node --check src/summarizer.js && node --check src/server.js && node --check src/library.js && node --check src/indexer.js && node --check public/icons.js && node --check public/markdown.js && node --check public/app.js && node --check public/log.js && node --check build/render-icon.cjs && node --check electron/main.mjs && node --check electron/preload.cjs && node --check electron/backend.mjs",
     "desktop": "electron .",
     "icon": "node build/render-icon.cjs",
     "dist": "electron-builder --win nsis --x64",
     "pack": "electron-builder --win dir --x64"
   },
-  "dependencies": {
-    "@fontsource-variable/inter": "^5.2.0",
-    "@highlightjs/cdn-assets": "^11.11.1",
-    "diff": "^8.0.2",
-    "dompurify": "^3.2.6",
-    "express": "^5.1.0",
-    "lucide": "^0.468.0",
-    "marked": "^16.4.0"
-  },
   "devDependencies": {
     "@playwright/test": "^1.56.0",
-    "electron": "^45.3.2",
+    "electron": "^45.2.3",
     "electron-builder": "^26.18.0"
   },
   "productName": "Chronicle",
@@ -47,6 +38,7 @@
       "src/**/*",
       "public/**/*",
       "electron/**/*",
+      "agentconfig/**/*",
       "build/icon.png"
     ],
     "asar": true,

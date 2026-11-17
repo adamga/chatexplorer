@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { readFile, readdir, stat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { diffLines } from 'diff';
+import { diffLines } from './diff.js';
 
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const isObject = (value) => value !== null && typeof value === 'object';
@@ -189,17 +189,79 @@ async function optionalLines(file, warnings) {
   }
 }
 
+async function optionalText(file, warnings) {
+  try { return await readFile(file, 'utf8'); }
+  catch (error) {
+    if (error.code !== 'ENOENT') warnings.push(`${path.basename(file)}: ${error.message}`);
+    return null;
+  }
+}
+
+export function parseWorkspaceYaml(content) {
+  if (!content || typeof content !== 'string') return null;
+  const result = {};
+  for (const rawLine of content.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const match = /^([A-Za-z0-9_]+)\s*:\s*(.*)$/.exec(trimmed);
+    if (!match) continue;
+    const [, key, rawVal] = match;
+    if (unsafeKeys.has(key)) continue;
+    let value = rawVal.trim();
+    if (value === '' || value === 'null' || value === '~') {
+      result[key] = null;
+    } else if (value === 'true' || value === 'false') {
+      result[key] = value === 'true';
+    } else if (/^-?\d+$/.test(value)) {
+      result[key] = Number(value);
+    } else if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+      try { result[key] = JSON.parse(value); }
+      catch {
+        result[key] = value.slice(1, -1)
+          .replace(/\\r/g, '\r')
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\');
+      }
+    } else if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
+      result[key] = value.slice(1, -1).replace(/''/g, "'");
+    } else {
+      result[key] = value;
+    }
+  }
+  return Object.keys(result).length ? result : null;
+}
+
 export async function discover(input) {
   const resolved = path.resolve(input);
   const info = await stat(resolved);
   if (info.isFile()) {
+    const base = path.basename(resolved).toLowerCase();
+    if (base === 'workspace.yaml') {
+      const siblingEvents = path.join(path.dirname(resolved), 'events.jsonl');
+      try {
+        if ((await stat(siblingEvents)).isFile()) return [siblingEvents];
+      } catch { /* missing events.jsonl */ }
+      throw new Error('Selected workspace.yaml folder does not contain an events.jsonl transcript yet.');
+    }
     if (/\.(jsonl|json)$/i.test(resolved)) return [resolved];
-    if (path.basename(resolved) === 'state.vscdb') return discover(path.dirname(resolved));
-    throw new Error('Choose a workspace storage folder, a chatSessions folder, or a session .json/.jsonl file.');
+    if (base === 'state.vscdb') return discover(path.dirname(resolved));
+    throw new Error('Choose a workspace storage folder, a .copilot/session-state folder, or a session .json/.jsonl/workspace.yaml file.');
   }
   const files = [];
+  const skipDirs = new Set([
+    'node_modules', '.git', 'GitHub.copilot-chat', 'chatEditingSessions', 'contents',
+    '.session-operation-locks', 'checkpoints', 'files', 'research', 'attachments'
+  ]);
   async function visit(dir, depth) {
     const children = await readdir(dir, { withFileTypes: true });
+    // Agent Host / Copilot CLI session folder containing events.jsonl
+    const eventsEntry = children.find((entry) => entry.isFile() && entry.name.toLowerCase() === 'events.jsonl');
+    if (eventsEntry) {
+      files.push(path.join(dir, eventsEntry.name));
+      return;
+    }
     const isSessions = ['chatsessions', 'emptywindowchatsessions', 'transferredchatsessions'].includes(path.basename(dir).toLowerCase());
     if (isSessions) {
       const candidates = children.filter((entry) => entry.isFile() && /\.(jsonl|json)$/i.test(entry.name));
@@ -208,16 +270,16 @@ export async function discover(input) {
         files.push(path.join(dir, entry.name));
       }
     }
-    if (depth < 3) {
+    if (depth < 4) {
       for (const entry of children) {
-        if (entry.isDirectory() && !['node_modules', '.git', 'GitHub.copilot-chat', 'chatEditingSessions', 'contents'].includes(entry.name)) {
+        if (entry.isDirectory() && !skipDirs.has(entry.name)) {
           await visit(path.join(dir, entry.name), depth + 1);
         }
       }
     }
   }
   await visit(resolved, 0);
-  if (!files.length) throw new Error('No persisted sessions found. Select the workspace hash folder containing chatSessions, or a session file directly.');
+  if (!files.length) throw new Error('No persisted sessions found. Select a workspaceStorage folder, a .copilot\\session-state folder, or a session file directly.');
   return files;
 }
 
@@ -250,9 +312,504 @@ export function applyTextEdits(content, edits) {
 
 export const sessionKey = (file) => createHash('sha256').update(path.resolve(file)).digest('hex').slice(0, 20);
 
+function parseMaybeJson(value) {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try { return JSON.parse(trimmed); } catch { return value; }
+  }
+  return value;
+}
+
+function toEpochMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (!value) return undefined;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function cleanObject(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v !== undefined && v !== null && v !== '') out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+async function loadAgentHostSession(file, entries, warnings) {
+  const id = sessionKey(file);
+  const sessionDir = path.dirname(file);
+  const [yamlText, vscodeMeta, planText] = await Promise.all([
+    optionalText(path.join(sessionDir, 'workspace.yaml'), warnings),
+    optionalJson(path.join(sessionDir, 'vscode.metadata.json'), warnings),
+    optionalText(path.join(sessionDir, 'plan.md'), warnings)
+  ]);
+  const yaml = parseWorkspaceYaml(yamlText);
+
+  let checkpointFiles = [];
+  try {
+    const cpEntries = await readdir(path.join(sessionDir, 'checkpoints'), { withFileTypes: true });
+    const mdFiles = cpEntries.filter((e) => e.isFile() && /\.md$/i.test(e.name)).map((e) => e.name).sort();
+    checkpointFiles = (await Promise.all(mdFiles.map(async (name) => {
+      const content = await optionalText(path.join(sessionDir, 'checkpoints', name), warnings);
+      if (!content || (name.toLowerCase() === 'index.md' && !/\|\s*\d+\s*\|/.test(content))) return null;
+      return { name, content };
+    }))).filter(Boolean);
+  } catch { /* no checkpoints folder */ }
+
+  const startEntry = entries.find((e) => e.value?.type === 'session.start');
+  const startData = startEntry?.value?.data || {};
+  const sessionId = String(yaml?.id || startData.sessionId || path.basename(sessionDir));
+  const clientName = String(yaml?.last_client_name || yaml?.client_name || startData.producer || 'copilot-agent');
+
+  const nodes = new Map();
+  let sequence = 0;
+  function node(kind, title, raw, extra = {}) {
+    const value = { id: `${id}-${sequence++}`, kind, title, source: 'events.jsonl', children: [], raw, ...extra };
+    nodes.set(value.id, value);
+    return value;
+  }
+
+  const overview = node('overview', 'Untitled agent session', {
+    sessionId,
+    format: 'copilot-session-state',
+    clientName,
+    workspace: yaml || null
+  }, { source: path.basename(file) });
+
+  const requests = [];
+  const modelTimeline = [];
+  let currentModel = startData.selectedModel || 'Not recorded';
+  let currentConfig = cleanObject({
+    reasoningEffort: startData.reasoningEffort,
+    contextTier: startData.contextTier
+  });
+  let previousTimelineModel;
+  let currentRequest = null;
+  let lastResponseText = '';
+  let editCount = 0;
+  let firstEventTs;
+  let lastEventTs;
+
+  const pendingToolMeta = new Map();
+  const openTools = new Map();
+  const editGroups = new Map();
+
+  function recordModelIfChanged(ownerRequest, model, config, timestamp) {
+    const resolved = model || 'Not recorded';
+    if (resolved === previousTimelineModel) return;
+    const change = {
+      from: previousTimelineModel || null,
+      to: resolved,
+      timestamp,
+      prompt: ownerRequest.index,
+      configuration: config
+    };
+    modelTimeline.push(change);
+    ownerRequest.children.push(node(
+      'model',
+      previousTimelineModel ? `Model changed: ${previousTimelineModel} → ${resolved}` : `Model selected: ${resolved}`,
+      change,
+      { model: resolved, timestamp }
+    ));
+    previousTimelineModel = resolved;
+  }
+
+  for (const { value: event, line } of entries) {
+    if (!isObject(event) || typeof event.type !== 'string') {
+      warnings.push(`events.jsonl:${line}: skipped record without an event type.`);
+      continue;
+    }
+    // Avoid retaining inline multi-megabyte binary blobs in memory; rawRef reads from disk on demand.
+    if (event.type === 'session.binary_asset' && isObject(event.data) && typeof event.data.data === 'string' && event.data.data.length > 1024) {
+      event.data = { ...event.data, data: `[${event.data.byteLength || event.data.data.length} bytes omitted in memory; inspect record to load]` };
+    }
+
+    const data = isObject(event.data) ? event.data : {};
+    const ts = toEpochMs(event.timestamp || event.ts);
+    if (ts !== undefined) {
+      if (firstEventTs === undefined || ts < firstEventTs) firstEventTs = ts;
+      if (lastEventTs === undefined || ts > lastEventTs) lastEventTs = ts;
+    }
+
+    if (event.type === 'session.start' || event.type === 'session.resume') {
+      if (data.selectedModel) currentModel = data.selectedModel;
+      const nextCfg = cleanObject({ reasoningEffort: data.reasoningEffort, contextTier: data.contextTier });
+      if (nextCfg) currentConfig = nextCfg;
+      continue;
+    }
+
+    if (event.type === 'session.model_change') {
+      if (data.newModel) currentModel = data.newModel;
+      currentConfig = cleanObject({
+        reasoningEffort: data.reasoningEffort,
+        contextTier: data.contextTier,
+        source: data.source
+      }) || currentConfig;
+      if (currentRequest) recordModelIfChanged(currentRequest, currentModel, currentConfig, ts);
+      continue;
+    }
+
+    if (event.type === 'user.message') {
+      const promptText = textOf(data.content) || textOf(data.transformedContent) || '(Empty prompt)';
+      const promptIndex = requests.length + 1;
+      const promptRaw = {
+        requestId: data.interactionId || data.messageId || event.id,
+        messageId: data.messageId,
+        turnId: data.turnId,
+        timestamp: ts,
+        modelId: currentModel,
+        modelConfiguration: currentConfig,
+        agent: { name: clientName, fullName: clientName },
+        modeInfo: data.agentMode ? { name: data.agentMode } : undefined,
+        delivery: data.delivery
+      };
+      currentRequest = node('prompt', titleOf(promptText, 'User prompt'), promptRaw, {
+        text: promptText,
+        timestamp: ts,
+        model: currentModel,
+        index: promptIndex,
+        hidden: false,
+        requestId: promptRaw.requestId
+      });
+      requests.push(currentRequest);
+      lastResponseText = '';
+      recordModelIfChanged(currentRequest, currentModel, currentConfig, ts);
+      continue;
+    }
+
+    if (event.type === 'assistant.message') {
+      if (data.model && data.model !== currentModel) {
+        currentModel = data.model;
+        if (currentRequest) recordModelIfChanged(currentRequest, currentModel, currentConfig, ts);
+      }
+      for (const tr of Array.isArray(data.toolRequests) ? data.toolRequests : []) {
+        if (tr?.toolCallId) {
+          pendingToolMeta.set(tr.toolCallId, {
+            ...tr,
+            arguments: parseMaybeJson(tr.arguments),
+            model: data.model || currentModel
+          });
+        }
+      }
+      if (!currentRequest) continue;
+
+      const rText = typeof data.reasoningText === 'string' ? data.reasoningText : '';
+      if (rText.trim() || data.reasoningOpaque) {
+        currentRequest.children.push(node(
+          'reasoning',
+          rText.trim() ? titleOf(rText, 'Reasoning') : 'Reasoning · text not persisted',
+          { reasoningText: rText, hasOpaque: Boolean(data.reasoningOpaque), messageId: data.messageId, turnId: data.turnId },
+          { text: rText, available: Boolean(rText.trim()), model: data.model || currentModel, timestamp: ts }
+        ));
+      }
+
+      const contentText = textOf(data.content);
+      if (contentText.trim()) {
+        currentRequest.children.push(node(
+          'response',
+          titleOf(contentText, 'Assistant response'),
+          data,
+          { text: contentText, available: true, model: data.model || currentModel, timestamp: ts }
+        ));
+        lastResponseText = contentText.trim();
+      }
+      continue;
+    }
+
+    if (event.type === 'tool.execution_start') {
+      if (!currentRequest) continue;
+      const reqMeta = pendingToolMeta.get(data.toolCallId);
+      const args = parseMaybeJson(data.arguments ?? reqMeta?.arguments);
+      const toolName = data.toolName || reqMeta?.name || 'tool';
+      const toolModel = data.model || reqMeta?.model || currentModel;
+      const label = reqMeta?.toolTitle || data.toolTitle || reqMeta?.intentionSummary ||
+        (typeof args?.description === 'string' ? args.description : '') || toolName;
+      const cmd = typeof args?.command === 'string' ? args.command : null;
+      const specific = {};
+      if (cmd) {
+        specific.language = /powershell|pwsh/i.test(toolName) ? 'pwsh' : 'bash';
+        specific.commandLine = { original: cmd };
+      }
+      if (toolName === 'task') {
+        specific.kind = 'subagent';
+        specific.prompt = args?.prompt;
+        if (args?.agent_type) specific.agentType = args.agent_type;
+        if (args?.model) specific.modelName = args.model;
+      }
+      const rawTool = {
+        toolId: toolName,
+        toolCallId: data.toolCallId,
+        invocationMessage: reqMeta?.intentionSummary || label,
+        isComplete: false,
+        startedAt: ts,
+        source: { label: clientName },
+        toolSpecificData: specific
+      };
+      const toolNode = node('tool', titleOf(label, toolName), rawTool, {
+        timestamp: ts,
+        duration: null,
+        toolName,
+        arguments: args,
+        model: specific.modelName || toolModel,
+        failed: false,
+        hidden: false
+      });
+      currentRequest.children.push(toolNode);
+      if (data.toolCallId) {
+        openTools.set(data.toolCallId, { node: toolNode, startTs: ts, owner: currentRequest });
+      }
+      continue;
+    }
+
+    if (event.type === 'tool.execution_complete') {
+      const open = data.toolCallId ? openTools.get(data.toolCallId) : null;
+      const owner = open?.owner || currentRequest;
+      if (!owner) continue;
+
+      const parsedResult = parseMaybeJson(data.result);
+      let outputText = '';
+      if (typeof parsedResult === 'string') outputText = parsedResult;
+      else if (isObject(parsedResult)) {
+        outputText = typeof parsedResult.content === 'string'
+          ? parsedResult.content
+          : typeof parsedResult.output === 'string'
+            ? parsedResult.output
+            : textOf(parsedResult);
+      }
+
+      let toolNode = open?.node;
+      if (!toolNode) {
+        const reqMeta = data.toolCallId ? pendingToolMeta.get(data.toolCallId) : null;
+        const toolName = reqMeta?.name || data.toolTelemetry?.properties?.command || 'tool';
+        toolNode = node('tool', titleOf(reqMeta?.toolTitle || toolName, 'Tool call'), {
+          toolId: toolName,
+          toolCallId: data.toolCallId,
+          isComplete: true,
+          source: { label: clientName },
+          toolSpecificData: {}
+        }, {
+          timestamp: ts,
+          duration: null,
+          toolName,
+          arguments: reqMeta?.arguments,
+          model: data.model || currentModel,
+          failed: false,
+          hidden: false
+        });
+        owner.children.push(toolNode);
+      }
+
+      const failed = data.success === false || Boolean(data.error);
+      toolNode.failed = failed;
+      toolNode.duration = open?.startTs && ts ? Math.max(0, ts - open.startTs) : null;
+      toolNode.raw.isComplete = true;
+      toolNode.raw.completedAt = ts;
+      if (data.shellExecution) Object.assign(toolNode.raw.toolSpecificData, data.shellExecution);
+      if (toolNode.raw.toolSpecificData?.kind === 'subagent' && outputText) {
+        toolNode.raw.toolSpecificData.result = outputText;
+      }
+      toolNode.raw.resultDetails = {
+        isError: failed,
+        ...(outputText ? { output: [{ isText: true, value: outputText }] } : {}),
+        ...(isObject(parsedResult) && parsedResult.structuredContent ? { structuredContent: parsedResult.structuredContent } : {}),
+        ...(data.error ? { error: data.error } : {})
+      };
+      toolNode.children.push(node('event', `tool.execution_complete · ${toolNode.toolName}`, event, {
+        line, timestamp: ts, text: outputText
+      }));
+
+      // Reconstruct file edit diffs from edit/create tool arguments
+      const args = toolNode.arguments;
+      if (!failed && (toolNode.toolName === 'edit' || toolNode.toolName === 'create') && typeof args?.path === 'string') {
+        const filePath = shortPath(args.path);
+        const before = toolNode.toolName === 'create' ? '' : (typeof args.old_str === 'string' ? args.old_str : undefined);
+        const after = toolNode.toolName === 'create'
+          ? (typeof args.file_text === 'string' ? args.file_text : '')
+          : (typeof args.new_str === 'string' ? args.new_str : undefined);
+        if (!editGroups.has(owner.id)) {
+          const group = node('group', 'File edit history', {
+            description: 'File create and edit operations recorded in the Copilot Agent tool stream.'
+          }, { source: 'Edit timeline' });
+          owner.children.push(group);
+          editGroups.set(owner.id, group);
+        }
+        editCount++;
+        editGroups.get(owner.id).children.push(node(
+          'edit',
+          `${toolNode.toolName} · ${filePath.split('\\').at(-1)}`,
+          { type: toolNode.toolName, path: filePath, arguments: args },
+          { source: 'Edit timeline', file: filePath, before, after, epoch: editCount, model: toolNode.model, timestamp: ts }
+        ));
+      }
+
+      // Surface task_complete summary as readable turn response when distinct
+      if (toolNode.toolName === 'task_complete' && typeof args?.summary === 'string' && args.summary.trim() && args.summary.trim() !== lastResponseText) {
+        owner.children.push(node(
+          'response',
+          titleOf(args.summary, 'Task completion summary'),
+          { summary: args.summary, source: 'task_complete' },
+          { text: args.summary, available: true, model: toolNode.model, timestamp: ts }
+        ));
+        lastResponseText = args.summary.trim();
+      }
+      continue;
+    }
+
+    if (event.type === 'session.task_complete' && currentRequest) {
+      const summaryText = typeof data.summary === 'string' ? data.summary.trim() : '';
+      if (summaryText && summaryText !== lastResponseText) {
+        currentRequest.children.push(node(
+          'response',
+          titleOf(summaryText, 'Task completion summary'),
+          data,
+          { text: summaryText, available: true, model: currentModel, timestamp: ts }
+        ));
+        lastResponseText = summaryText;
+      }
+      continue;
+    }
+
+    if ((event.type === 'session.error' || event.type === 'model.turn_failed' || event.type === 'abort') && currentRequest) {
+      currentRequest.children.push(node(
+        'event',
+        `${event.type}${data.message ? ` · ${titleOf(String(data.message), '')}` : ''}`,
+        event,
+        { line, timestamp: ts, text: textOf(data.message || data.reason || ''), failed: event.type !== 'abort' }
+      ));
+    }
+  }
+
+  overview.title = titleOf(yaml?.summary || yaml?.name || '', requests[0]?.title || 'Untitled agent session');
+
+  if (planText?.trim()) {
+    overview.children.push(node('response', 'Session plan (plan.md)', { file: 'plan.md', content: planText }, {
+      source: 'plan.md', text: planText, available: true
+    }));
+  }
+  if (checkpointFiles.length) {
+    const cpGroup = node('group', 'Session checkpoints', {
+      description: 'Checkpoint handoff summaries persisted alongside the Copilot Agent session.'
+    }, { source: 'checkpoints' });
+    for (const cp of checkpointFiles) {
+      cpGroup.children.push(node('response', `Checkpoint · ${cp.name}`, cp, {
+        source: `checkpoints/${cp.name}`, text: cp.content, available: true
+      }));
+    }
+    overview.children.push(cpGroup);
+  }
+  if (yaml) overview.children.push(node('context', 'Workspace & session metadata', yaml, { source: 'workspace.yaml' }));
+  if (vscodeMeta) overview.children.push(node('context', 'VS Code Agent Host metadata', vscodeMeta, { source: 'vscode.metadata.json' }));
+
+  if (entries.length) {
+    const eventGroup = node('group', 'Agent event stream', {
+      description: 'Original append-only events from events.jsonl. Open any event to load its full persisted JSON record from disk.'
+    }, { source: 'events.jsonl' });
+    for (const { value, line, offset, length } of entries) {
+      const eventType = value?.type || 'unknown';
+      const detailLabel = value?.data?.toolName ? ` · ${value.data.toolName}` : '';
+      eventGroup.children.push(node(
+        'event',
+        `Line ${line} · ${eventType}${detailLabel}`,
+        { type: eventType, id: value?.id, timestamp: value?.timestamp, recordBytes: length, note: 'Open this record to load it from events.jsonl.' },
+        { line, source: 'events.jsonl', timestamp: toEpochMs(value?.timestamp), rawRef: { offset, length } }
+      ));
+    }
+    overview.children.push(eventGroup);
+  }
+
+  const allNodes = [...nodes.values()];
+  const stats = {
+    prompts: requests.length,
+    responses: allNodes.filter((item) => item.kind === 'response' && item.source === 'events.jsonl').length,
+    tools: allNodes.filter((item) => item.kind === 'tool').length,
+    reasoning: allNodes.filter((item) => item.kind === 'reasoning').length,
+    edits: editCount,
+    events: entries.length,
+    models: new Set(modelTimeline.map((item) => item.to)).size
+  };
+
+  for (const item of allNodes) {
+    const deep = !['overview', 'group', 'prompt'].includes(item.kind) && !item.rawRef;
+    item.searchText = `${item.title}\n${item.text || ''}\n${deep ? collectText(item.raw, 20000) : ''}\n${collectText(item.arguments, 8000)}`.toLowerCase();
+  }
+
+  const rawWsPath = String(
+    vscodeMeta?.worktreeProperties?.repositoryPath ||
+    yaml?.cwd ||
+    yaml?.git_root ||
+    startData.context?.cwd ||
+    startData.context?.gitRoot ||
+    ''
+  ).trim();
+  const workspacePath = rawWsPath ? shortPath(rawWsPath) : '';
+  const repoFallback = typeof yaml?.repository === 'string' ? yaml.repository.split('/').at(-1) : '';
+  const workspaceName = workspacePath
+    ? workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1).replace(/\.code-workspace$/i, '')
+    : repoFallback;
+
+  const createdAt = toEpochMs(yaml?.created_at || startData.startTime) ?? firstEventTs;
+  const updatedAt = toEpochMs(yaml?.updated_at);
+  const lastAt = Math.max(lastEventTs || 0, updatedAt || 0) || createdAt;
+
+  const exportedRaw = {
+    format: 'copilot-session-state',
+    sessionId,
+    title: overview.title,
+    clientName,
+    workspace: yaml || null,
+    vscodeMetadata: vscodeMeta || null,
+    requests: requests.map((req) => ({
+      index: req.index,
+      timestamp: req.timestamp,
+      model: req.model,
+      prompt: req.text
+    }))
+  };
+
+  return {
+    id,
+    sessionId,
+    sessionFormat: 'agent-host',
+    clientName,
+    title: overview.title,
+    file,
+    createdAt,
+    workspace: workspacePath,
+    workspacePath,
+    workspaceName,
+    lastAt,
+    firstPrompt: requests[0]?.title || '',
+    size: (await stat(file)).size,
+    stats,
+    warnings,
+    modelTimeline,
+    overview,
+    requests,
+    nodes,
+    raw: exportedRaw,
+    sources: {
+      session: 'events.jsonl',
+      transcript: entries.length,
+      debug: 0,
+      editing: editCount > 0,
+      models: modelTimeline.length > 0,
+      workspaceYaml: Boolean(yaml),
+      checkpoints: checkpointFiles.length
+    }
+  };
+}
+
 export async function loadSession(file) {
   const warnings = [];
   const entries = file.endsWith('.jsonl') ? await readJsonLines(file, warnings) : [];
+  const isAgentEventStream = file.endsWith('.jsonl') && (
+    path.basename(file).toLowerCase() === 'events.jsonl' ||
+    (entries.length > 0 && entries[0].value?.kind === undefined && typeof entries[0].value?.type === 'string')
+  );
+  if (isAgentEventStream) {
+    return loadAgentHostSession(file, entries, warnings);
+  }
   const session = file.endsWith('.jsonl') ? replay(entries, warnings, { clone: false }) : JSON.parse(await readFile(file, 'utf8'));
   if (!Array.isArray(session.requests)) throw new Error('Session has no requests array.');
   const id = sessionKey(file);
@@ -468,7 +1025,7 @@ export async function loadSession(file) {
   const workspacePath = workspaceUri ? shortPath(workspaceUri) : '';
   const timestamps = requests.map((request) => request.timestamp).filter(Number.isFinite);
   const result = {
-    id, sessionId, title: overview.title, file, createdAt: session.creationDate, workspace: workspaceUri,
+    id, sessionId, sessionFormat: 'vscode-chat', clientName: 'vscode-chat', title: overview.title, file, createdAt: session.creationDate, workspace: workspaceUri,
     workspacePath, workspaceName: workspacePath ? workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1).replace(/\.code-workspace$/i, '') : '',
     lastAt: timestamps.length ? Math.max(...timestamps) : session.lastMessageDate || session.creationDate,
     firstPrompt: requests[0]?.title || '', size: (await stat(file)).size,
@@ -484,8 +1041,8 @@ export function summarizeNode(item) {
     children: item.children.map(summarizeNode) };
 }
 export function summarizeSession(session) {
-  const { id, sessionId, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources } = session;
-  return { id, sessionId, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources };
+  const { id, sessionId, sessionFormat, clientName, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources } = session;
+  return { id, sessionId, sessionFormat, clientName, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources };
 }
 // Compact text used for cross-session search. Node IDs are deterministic for unchanged source files.
 export function buildCorpus(session) {

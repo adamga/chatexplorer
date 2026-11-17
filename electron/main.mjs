@@ -1,7 +1,8 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell, session, utilityProcess } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, copyFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,7 @@ let importSequence = 0;
 const pendingImports = new Map();
 
 const vscodeStorage = () => path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Code', 'User', 'workspaceStorage');
+const copilotSessionState = () => path.join(os.homedir(), '.copilot', 'session-state');
 const pathArguments = (argv) => argv.slice(app.isPackaged ? 1 : 2).filter((value) => value && !value.startsWith('-') && path.resolve(value) !== path.resolve(app.getAppPath()));
 
 if (process.env.CHRONICLE_USER_DATA) app.setPath('userData', process.env.CHRONICLE_USER_DATA);
@@ -36,25 +38,64 @@ else {
   });
 }
 
+async function seedEnvIfMissing(dataDir) {
+  if (process.env.CHRONICLE_USER_DATA) return;
+  const targetEnv = path.join(dataDir, '.env');
+  try { await stat(targetEnv); return; } catch { /* not present yet */ }
+  const candidates = [
+    process.env.CHRONICLE_ENV_FILE ? path.resolve(process.env.CHRONICLE_ENV_FILE) : null,
+    path.join(process.cwd(), '.env'),
+    path.join(path.dirname(process.execPath), '.env'),
+    !app.isPackaged ? path.join(here, '..', '.env') : null
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (info.isFile()) {
+        await copyFile(candidate, targetEnv, fsConstants.COPYFILE_EXCL);
+        return;
+      }
+    } catch { /* try next */ }
+  }
+}
+
 async function launch() {
   app.setAppUserModelId('com.chronicle.chatexplorer');
   const dataDir = app.getPath('userData');
   await mkdir(dataDir, { recursive: true });
+  await seedEnvIfMissing(dataDir);
   await startBackend({ dataDir, loadSamples: !app.isPackaged, paths: pathArguments(process.argv) });
 
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   ipcMain.handle('chronicle:pick', async (_event, kind) => {
-    let defaultPath = vscodeStorage();
-    try { await stat(defaultPath); } catch { defaultPath = os.homedir(); }
-    const result = await dialog.showOpenDialog(mainWindow, kind === 'file'
-      ? { title: 'Open a chat session file', defaultPath, properties: ['openFile'], filters: [{ name: 'Chat sessions', extensions: ['jsonl', 'json', 'vscdb'] }, { name: 'All files', extensions: ['*'] }] }
-      : { title: 'Open a workspace storage folder', defaultPath, properties: ['openDirectory'] });
+    const isAgent = kind === 'agent-folder' || kind === 'agent-file';
+    let defaultPath = isAgent ? copilotSessionState() : vscodeStorage();
+    try { await stat(defaultPath); } catch {
+      const parentPath = path.dirname(defaultPath);
+      try { await stat(parentPath); defaultPath = parentPath; } catch { defaultPath = os.homedir(); }
+    }
+    const isFile = kind === 'file' || kind === 'agent-file';
+    const result = await dialog.showOpenDialog(mainWindow, isFile
+      ? {
+          title: isAgent ? 'Open an Agent Host / Copilot CLI session file' : 'Open a VS Code chat session file',
+          defaultPath,
+          properties: ['openFile'],
+          filters: isAgent
+            ? [{ name: 'Agent sessions (events.jsonl, workspace.yaml)', extensions: ['jsonl', 'yaml', 'yml'] }, { name: 'All files', extensions: ['*'] }]
+            : [{ name: 'Chat sessions', extensions: ['jsonl', 'json', 'vscdb'] }, { name: 'All files', extensions: ['*'] }]
+        }
+      : {
+          title: isAgent ? 'Open Agent Host / Copilot CLI session-state folder' : 'Open VS Code workspaceStorage folder',
+          defaultPath,
+          properties: ['openDirectory']
+        });
     return result.canceled ? null : result.filePaths[0];
   });
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: '&File', submenu: [
-      { label: 'Open session…', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('chronicle:open') },
+      { label: 'Open VS Code session…', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('chronicle:open', 'vscode') },
+      { label: 'Open Agent / Copilot CLI sessions…', accelerator: 'CmdOrCtrl+Shift+O', click: () => mainWindow?.webContents.send('chronicle:open', 'agent') },
       { type: 'separator' },
       { role: 'quit', label: 'Exit' }
     ] },
@@ -82,6 +123,19 @@ function createWindow() {
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (backendUrl && url.startsWith(`${backendUrl}/log.html`)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 880, height: 660, minWidth: 520, minHeight: 380,
+          title: 'Chronicle · Summary Operation Log',
+          backgroundColor: '#101413',
+          icon: path.join(here, '..', 'build', 'icon.png'),
+          autoHideMenuBar: true,
+          webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: false }
+        }
+      };
+    }
     if (/^https?:\/\//i.test(url) && !url.startsWith(backendUrl)) shell.openExternal(url);
     return { action: 'deny' };
   });

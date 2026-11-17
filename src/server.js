@@ -1,97 +1,196 @@
-import express from 'express';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
+import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { readFile, writeFile, rename, readdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, readdir, stat } from 'node:fs/promises';
 import { summarizeSession, summarizeNode, detailNodeAsync, storyPage } from './parser.js';
 import { createLibrary } from './library.js';
+import { createSummaryService } from './summarizer.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-let configFile = path.join(projectRoot, '.chat-explorer.json');
-const app = express();
-const imports = new Set();
-const startupWarnings = [];
-let saveQueue = Promise.resolve();
-app.disable('x-powered-by');
-app.use((req, res, next) => {
-  const host = req.headers.host;
-  if (!host || !/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return res.status(403).json({ error: 'Local requests only.' });
-  if ((req.headers.origin && ![`http://${host}`].includes(req.headers.origin)) || req.headers['sec-fetch-site'] === 'cross-site') {
-    return res.status(403).json({ error: 'Cross-origin access is not allowed.' });
-  }
-  res.set({
-    'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-    'Cache-Control': 'no-store'
-  });
-  next();
-});
-app.use(express.json({ limit: '32kb' }));
+const publicDir = path.join(projectRoot, 'public');
+const MAX_JSON_BYTES = 32 * 1024;
 
-let library = null;
-async function importPath(input, persist = true) {
-  const result = await library.addPath(input);
-  if (persist) {
-    imports.add(path.resolve(input));
-    const content = JSON.stringify({ paths: [...imports] }, null, 2);
-    const save = saveQueue.catch(() => {}).then(async () => {
-      const temporary = `${configFile}.${process.pid}.tmp`;
-      await writeFile(temporary, content, { mode: 0o600 });
-      await rename(temporary, configFile);
-    });
-    saveQueue = save;
-    await save;
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  'Cache-Control': 'no-store'
+};
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8'
+};
+
+function applySecurityHeaders(res) {
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+    res.setHeader(key, value);
   }
-  return result;
 }
-const sessionOf = (req) => library.getSession(req.params.id);
-app.get('/api/sessions', (_req, res) => res.json({ ...library.list(), warnings: startupWarnings }));
-app.post('/api/import', async (req, res) => {
-  if (typeof req.body?.path !== 'string' || !req.body.path.trim()) return res.status(400).json({ error: 'A local path is required.' });
-  res.json(await importPath(req.body.path.trim()));
-});
-app.get('/api/search', (req, res) => {
-  const query = String(req.query.q || '').slice(0, 200);
-  res.json(library.search(query, { session: req.query.session ? String(req.query.session) : undefined }));
-});
-app.get('/api/sessions/:id', async (req, res) => {
-  const session = await sessionOf(req);
-  res.json({ ...summarizeSession(session), overview: summarizeNode(session.overview), requests: session.requests.map(summarizeNode) });
-});
-app.get('/api/sessions/:id/nodes/:nodeId', async (req, res) => {
-  const session = await sessionOf(req);
-  const item = session.nodes.get(req.params.nodeId);
-  if (!item) return res.status(404).json({ error: 'Item not found.' });
-  res.json(await detailNodeAsync(session, item));
-});
-app.get('/api/sessions/:id/story', async (req, res) => {
-  res.json(storyPage(await sessionOf(req), {
-    parentId: req.query.parent,
-    offset: Number(req.query.offset || 0),
-    limit: Number(req.query.limit || 16)
-  }));
-});
-app.get('/api/sessions/:id/search', async (req, res) => {
-  const query = String(req.query.q || '').toLowerCase().trim();
-  const session = await sessionOf(req);
-  res.json({ ids: query ? [...session.nodes.values()].filter((item) => item.searchText.includes(query)).map((item) => item.id) : [] });
-});
-app.get('/api/sessions/:id/export', async (req, res) => {
-  const session = await sessionOf(req);
-  res.attachment(`chat-${session.id}.json`).json(session.raw);
-});app.use('/vendor/marked', express.static(path.join(projectRoot, 'node_modules', 'marked', 'lib')));
-app.use('/vendor/dompurify', express.static(path.join(projectRoot, 'node_modules', 'dompurify', 'dist')));
-app.use('/vendor/highlight', express.static(path.join(projectRoot, 'node_modules', '@highlightjs', 'cdn-assets')));
-app.use('/vendor/lucide', express.static(path.join(projectRoot, 'node_modules', 'lucide', 'dist', 'umd')));
-app.use('/vendor/font', express.static(path.join(projectRoot, 'node_modules', '@fontsource-variable', 'inter')));
-app.use(express.static(path.join(projectRoot, 'public')));
-app.use((error, _req, res, _next) => {
-  console.error(error.message);
-  res.status(error.status || 400).json({ error: error.message });
-});
 
-export async function startServer({ port = 3210, dataDir, loadSamples = true, paths = [] } = {}) {
-  if (dataDir) configFile = path.join(dataDir, 'settings.json');
-  library = createLibrary({ cacheDir: path.join(dataDir || path.join(projectRoot, '.chat-explorer-cache'), dataDir ? 'index-cache' : '') });
+function sendJson(res, status, payload, extraHeaders = {}) {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  applySecurityHeaders(res);
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Length', body.length);
+  for (const [key, value] of Object.entries(extraHeaders)) res.setHeader(key, value);
+  res.writeHead(status);
+  res.end(body);
+}
+
+function sendText(res, status, text, contentType = 'text/plain; charset=utf-8', extraHeaders = {}) {
+  const body = Buffer.from(String(text ?? ''), 'utf8');
+  applySecurityHeaders(res);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', body.length);
+  for (const [key, value] of Object.entries(extraHeaders)) res.setHeader(key, value);
+  res.writeHead(status);
+  res.end(body);
+}
+
+function contentDispositionAttachment(filename) {
+  const safeAscii = String(filename || 'download').replace(/["\\\r\n]/g, '_');
+  return `attachment; filename="${safeAscii}"`;
+}
+
+async function readJsonBody(req) {
+  let total = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_JSON_BYTES) {
+      const err = new Error('Request payload exceeds 32 KB limit.');
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(chunk);
+  }
+  if (!total) return null;
+  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const err = new Error('Invalid JSON request body.');
+    err.status = 400;
+    throw err;
+  }
+}
+
+function decodeSegment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    const err = new Error('Malformed URL parameter.');
+    err.status = 400;
+    throw err;
+  }
+}
+
+async function serveStaticFile(req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendJson(res, 405, { error: 'Method not allowed.' });
+    return;
+  }
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+  } catch {
+    sendJson(res, 400, { error: 'Malformed URL path.' });
+    return;
+  }
+  if (decoded.includes('\0')) {
+    sendJson(res, 400, { error: 'Invalid URL path.' });
+    return;
+  }
+  const relative = decoded.replace(/^\/+/, '');
+  const resolved = path.resolve(publicDir, relative);
+  const rootWithSep = publicDir.endsWith(path.sep) ? publicDir : publicDir + path.sep;
+  if (resolved !== publicDir && !resolved.startsWith(rootWithSep)) {
+    sendJson(res, 403, { error: 'Forbidden.' });
+    return;
+  }
+
+  let target = resolved;
+  let info = await stat(target).catch(() => null);
+  if (info?.isDirectory()) {
+    target = path.join(target, 'index.html');
+    info = await stat(target).catch(() => null);
+  }
+  if (!info?.isFile()) {
+    sendJson(res, 404, { error: 'Not found.' });
+    return;
+  }
+
+  const ext = path.extname(target).toLowerCase();
+  applySecurityHeaders(res);
+  res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
+  res.setHeader('Content-Length', info.size);
+  res.writeHead(200);
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  const stream = createReadStream(target);
+  stream.on('error', () => {
+    if (!res.headersSent) sendJson(res, 500, { error: 'Failed to read static file.' });
+    else res.destroy();
+  });
+  stream.pipe(res);
+}
+
+function defaultDevicePaths() {
+  const home = os.homedir();
+  const vscodeStorage = process.platform === 'win32'
+    ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Code', 'User', 'workspaceStorage')
+    : process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support', 'Code', 'User', 'workspaceStorage')
+      : path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Code', 'User', 'workspaceStorage');
+  const agentSessions = path.join(home, '.copilot', 'session-state');
+  return { vscodeStorage, agentSessions };
+}
+
+export async function startServer({ port = 3210, dataDir, envDir, loadSamples = true, paths = [], fetchImpl, maxChunkChars } = {}) {
+  const configFile = dataDir ? path.join(dataDir, 'settings.json') : path.join(projectRoot, '.chat-explorer.json');
+  const imports = new Set();
+  const startupWarnings = [];
+  let saveQueue = Promise.resolve();
+
+  const library = createLibrary({ cacheDir: path.join(dataDir || path.join(projectRoot, '.chat-explorer-cache'), dataDir ? 'index-cache' : '') });
+  const summaryService = createSummaryService({
+    baseDir: envDir || dataDir || projectRoot,
+    getSession: (id) => library.getSession(id),
+    fetchImpl,
+    maxChunkChars
+  });
+
+  async function importPath(input, persist = true) {
+    const result = await library.addPath(input);
+    if (persist) {
+      imports.add(path.resolve(input));
+      const content = JSON.stringify({ paths: [...imports] }, null, 2);
+      const save = saveQueue.catch(() => {}).then(async () => {
+        const temporary = `${configFile}.${process.pid}.tmp`;
+        await writeFile(temporary, content, { mode: 0o600 });
+        await rename(temporary, configFile);
+      });
+      saveQueue = save;
+      await save;
+    }
+    return result;
+  }
+
   try {
     const config = JSON.parse(await readFile(configFile, 'utf8'));
     for (const input of config.paths || []) {
@@ -99,6 +198,7 @@ export async function startServer({ port = 3210, dataDir, loadSamples = true, pa
       try { await importPath(input, false); } catch (error) { startupWarnings.push(`${input}: ${error.message}`); }
     }
   } catch (error) { if (error.code !== 'ENOENT') startupWarnings.push(`Saved library: ${error.message}`); }
+
   if (!library.size && loadSamples) {
     try {
       const samples = await readdir(path.join(projectRoot, 'chatsessions'), { withFileTypes: true });
@@ -111,13 +211,148 @@ export async function startServer({ port = 3210, dataDir, loadSamples = true, pa
   for (const input of paths) {
     try { await importPath(input); } catch (error) { startupWarnings.push(`${input}: ${error.message}`); }
   }
+
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT must be an integer from 0 to 65535.');
-  const server = await new Promise((resolve, reject) => {
-    const listener = app.listen(port, '127.0.0.1', () => resolve(listener));
-    listener.once('error', reject);
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const host = req.headers.host;
+      if (!host || !/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) {
+        sendJson(res, 403, { error: 'Local requests only.' });
+        return;
+      }
+      if ((req.headers.origin && ![`http://${host}`].includes(req.headers.origin)) || req.headers['sec-fetch-site'] === 'cross-site') {
+        sendJson(res, 403, { error: 'Cross-origin access is not allowed.' });
+        return;
+      }
+
+      const parsedUrl = new URL(req.url || '/', `http://${host}`);
+      const pathname = parsedUrl.pathname;
+      const searchParams = parsedUrl.searchParams;
+      const method = req.method || 'GET';
+
+      if (pathname.startsWith('/api/')) {
+        if (method === 'GET' && pathname === '/api/sessions') {
+          sendJson(res, 200, { ...library.list(), warnings: startupWarnings, defaultPaths: defaultDevicePaths() });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/import') {
+          const body = await readJsonBody(req);
+          if (typeof body?.path !== 'string' || !body.path.trim()) {
+            sendJson(res, 400, { error: 'A local path is required.' });
+            return;
+          }
+          sendJson(res, 200, await importPath(body.path.trim()));
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/search') {
+          const query = String(searchParams.get('q') || '').slice(0, 200);
+          const sessionScope = searchParams.get('session');
+          sendJson(res, 200, library.search(query, { session: sessionScope ? String(sessionScope) : undefined }));
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/summary/config') {
+          sendJson(res, 200, await summaryService.getPublicConfig());
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/summary/config') {
+          const body = await readJsonBody(req);
+          sendJson(res, 200, await summaryService.saveConfig(body || {}));
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/summary/test') {
+          const body = await readJsonBody(req);
+          sendJson(res, 200, await summaryService.testConnection(body || null));
+          return;
+        }
+
+        let match;
+        if (method === 'GET' && (match = /^\/api\/summary\/jobs\/([^/]+)$/.exec(pathname))) {
+          const job = summaryService.getJob(decodeSegment(match[1]), { includeMarkdown: searchParams.get('markdown') === '1' });
+          if (!job) { sendJson(res, 404, { error: 'Summary operation not found.' }); return; }
+          sendJson(res, 200, job);
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/summary\/jobs\/([^/]+)\/download$/.exec(pathname))) {
+          const job = summaryService.getJob(decodeSegment(match[1]), { includeMarkdown: true });
+          if (!job) { sendJson(res, 404, { error: 'Summary operation not found.' }); return; }
+          if (job.status !== 'completed' || !job.markdown) { sendJson(res, 409, { error: 'Summary is not ready yet.' }); return; }
+          sendText(res, 200, job.markdown, 'text/markdown; charset=utf-8', {
+            'Content-Disposition': contentDispositionAttachment(job.fileName)
+          });
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/sessions\/([^/]+)$/.exec(pathname))) {
+          const session = await library.getSession(decodeSegment(match[1]));
+          sendJson(res, 200, {
+            ...summarizeSession(session),
+            overview: summarizeNode(session.overview),
+            requests: session.requests.map(summarizeNode)
+          });
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/sessions\/([^/]+)\/nodes\/([^/]+)$/.exec(pathname))) {
+          const session = await library.getSession(decodeSegment(match[1]));
+          const item = session.nodes.get(decodeSegment(match[2]));
+          if (!item) { sendJson(res, 404, { error: 'Item not found.' }); return; }
+          sendJson(res, 200, await detailNodeAsync(session, item));
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/sessions\/([^/]+)\/story$/.exec(pathname))) {
+          const session = await library.getSession(decodeSegment(match[1]));
+          sendJson(res, 200, storyPage(session, {
+            parentId: searchParams.get('parent') || undefined,
+            offset: Number(searchParams.get('offset') || 0),
+            limit: Number(searchParams.get('limit') || 16)
+          }));
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/sessions\/([^/]+)\/search$/.exec(pathname))) {
+          const query = String(searchParams.get('q') || '').toLowerCase().trim();
+          const session = await library.getSession(decodeSegment(match[1]));
+          sendJson(res, 200, {
+            ids: query ? [...session.nodes.values()].filter((item) => item.searchText.includes(query)).map((item) => item.id) : []
+          });
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/sessions\/([^/]+)\/export$/.exec(pathname))) {
+          const session = await library.getSession(decodeSegment(match[1]));
+          sendJson(res, 200, session.raw, {
+            'Content-Disposition': contentDispositionAttachment(`chat-${session.id}.json`)
+          });
+          return;
+        }
+        if (method === 'POST' && (match = /^\/api\/sessions\/([^/]+)\/summarize$/.exec(pathname))) {
+          await readJsonBody(req);
+          sendJson(res, 202, await summaryService.startSummaryJob(decodeSegment(match[1])));
+          return;
+        }
+
+        sendJson(res, 404, { error: 'API route not found.' });
+        return;
+      }
+
+      await serveStaticFile(req, res, pathname);
+    } catch (error) {
+      console.error(error.message);
+      if (!res.headersSent) {
+        sendJson(res, error.status || 400, { error: error.message });
+      } else {
+        res.destroy();
+      }
+    }
   });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
+
   const actual = server.address().port;
-  return { server, port: actual, url: `http://127.0.0.1:${actual}`, sessionCount: library.size, warnings: startupWarnings, importPath, library };
+  return { server, port: actual, url: `http://127.0.0.1:${actual}`, sessionCount: library.size, warnings: startupWarnings, importPath, library, summaryService };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

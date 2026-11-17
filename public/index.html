@@ -6,12 +6,9 @@
   <meta name="theme-color" content="#101413">
   <title>Chronicle / Chat Explorer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23c7f5a1'/%3E%3Cpath d='M21 10a8 8 0 1 0 0 12M11 16h12' fill='none' stroke='%23101413' stroke-width='3'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/vendor/highlight/styles/github-dark.min.css">
   <link rel="stylesheet" href="/styles.css">
-  <script defer src="/vendor/marked/marked.umd.js"></script>
-  <script defer src="/vendor/dompurify/purify.min.js"></script>
-  <script defer src="/vendor/highlight/highlight.min.js"></script>
-  <script defer src="/vendor/lucide/lucide.js"></script>
+  <script defer src="/icons.js"></script>
+  <script defer src="/markdown.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body>
@@ -31,7 +28,7 @@
     </nav>
     <header class="topbar">
       <div class="wordmark">chronicle<span class="wordmark-divider">/</span><span class="product-label">CHAT EXPLORER</span><span class="beta">LOCAL</span></div>
-      <form class="global-search" id="global-search-form" role="search"><i data-lucide="search"></i><input id="global-search" type="search" placeholder="Search every conversation..." aria-label="Search sessions" autocomplete="off" spellcheck="false"><select id="search-scope" aria-label="Search scope"><option value="all">All sessions</option><option value="session">This session</option></select><kbd>Ctrl ⇧ F</kbd></form><div class="top-actions"><span class="privacy"><span class="status-dot"></span> Your history. On your machine.</span><button class="button import-button" id="open-button"><i data-lucide="folder-plus"></i> Open session</button></div>
+      <form class="global-search" id="global-search-form" role="search"><i data-lucide="search"></i><input id="global-search" type="search" placeholder="Search every conversation..." aria-label="Search sessions" autocomplete="off" spellcheck="false"><select id="search-scope" aria-label="Search scope"><option value="all">All sessions</option><option value="session">This session</option></select><kbd>Ctrl ⇧ F</kbd></form><div class="top-actions"><span class="privacy"><span class="status-dot"></span> Your history. On your machine.</span><button class="button config-button" id="config-button" title="Configure Microsoft Foundry summary agent"><i data-lucide="sliders-horizontal"></i><span class="config-button-label">Summary agent</span><span class="config-dot" id="config-status-dot" hidden></span></button><button class="button import-button" id="open-button" title="Open VS Code workspaceStorage sessions (Ctrl+O)"><i data-lucide="folder-plus"></i><span class="open-btn-label">Open session</span></button><button class="button import-button agent-import-button" id="open-agent-button" title="Open Agent Host / Copilot CLI sessions (.copilot\session-state)"><i data-lucide="bot"></i><span class="open-btn-label">Agent sessions</span></button></div>
     </header>
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-top">
@@ -43,6 +40,7 @@
       </div>
       <div class="tree-heading"><span id="tree-heading-label">SESSIONS</span><div><button class="icon-button" id="collapse-button" title="Collapse all" aria-label="Collapse all"><i data-lucide="fold-vertical"></i></button><button class="icon-button" id="expand-button" title="Expand prompts" aria-label="Expand prompts"><i data-lucide="unfold-vertical"></i></button></div></div>
       <div class="search-wrap"><i data-lucide="search"></i><input id="search" type="search" placeholder="Filter sessions..." aria-label="Filter"><kbd>Ctrl K</kbd></div>
+      <div class="library-sort-bar" id="library-sort-bar"><label for="sidebar-sort"><i data-lucide="arrow-up-down"></i> Sort</label><select id="sidebar-sort" aria-label="Sort sessions"><option value="date-desc">Date (Newest first)</option><option value="date-asc">Date (Oldest first)</option><option value="name-asc">Name (A → Z)</option><option value="name-desc">Name (Z → A)</option></select></div>
       <div class="filters" id="filters" aria-label="Filter item types">
         <button class="filter active" data-filter="all">All activity</button><button class="filter" data-filter="response">Messages</button><button class="filter" data-filter="tool">Tools</button><button class="filter" data-filter="edit">Edits</button><button class="filter" data-filter="reasoning">Thoughts</button>
       </div>
@@ -54,19 +52,118 @@
       <div class="breadcrumb-bar"><div id="breadcrumb">Sessions <span>/</span> Overview</div><div class="breadcrumb-actions"><button class="icon-button" id="previous-button" title="Previous item" aria-label="Previous item"><i data-lucide="arrow-up"></i></button><button class="icon-button" id="next-button" title="Next item" aria-label="Next item"><i data-lucide="arrow-down"></i></button><span class="separator"></span><button class="icon-button" id="export-button" title="Export reconstructed session JSON" aria-label="Export session"><i data-lucide="download"></i></button></div></div>
       <div class="reader-scroll" id="reader"><div class="loading-state"><span class="spinner"></span> Opening your session...</div></div>
     </main>
-    <footer class="statusbar"><div><i data-lucide="git-branch"></i><span>Persisted history</span><span class="statusbar-divider"></span><span id="bottom-source">No source selected</span></div><div><span class="status-dot"></span> No cloud. No telemetry. <span class="statusbar-divider"></span><span>CHRONICLE v1.0</span></div></footer>
+    <footer class="statusbar"><div><i data-lucide="git-branch"></i><span>Persisted history</span><span class="statusbar-divider"></span><span id="bottom-source">No source selected</span></div><div><span class="status-dot"></span> No cloud. No telemetry. <span class="statusbar-divider"></span><span>CHRONICLE v1.2</span></div></footer>
   </div>
   <dialog id="open-dialog">
     <form id="open-form">
       <div class="dialog-icon"><i data-lucide="folder-open"></i></div><button type="button" class="icon-button dialog-close" data-close="open-dialog" aria-label="Close"><i data-lucide="x"></i></button>
-      <div class="eyebrow accent">BRING YOUR OWN HISTORY</div><h2>Every conversation has a story.</h2><p>Open a saved VS Code workspace folder or a raw session file. Chronicle reads the original files without changing them.</p>
-      <label for="path-input">LOCAL FOLDER OR SESSION FILE</label><div class="path-row"><input id="path-input" placeholder="C:\...\workspaceStorage\your-workspace-hash" required autocomplete="off" spellcheck="false"><button type="button" class="button desktop-only" id="browse-folder" title="Choose a workspace folder"><i data-lucide="folder-search"></i> Folder</button><button type="button" class="button desktop-only" id="browse-file" title="Choose a session file"><i data-lucide="file-search"></i> File</button></div>
-      <div class="path-hint"><i data-lucide="info"></i><span>Accepts a workspace hash folder, <code>chatSessions</code> folder, <code>state.vscdb</code> path, or session <code>.jsonl / .json</code> file. Keep sibling folders for tool events and file snapshots.</span></div>
+      <div class="eyebrow accent">VS CODE · WORKSPACESTORAGE</div><h2>Open VS Code chat sessions.</h2><p>Open your local VS Code <code>workspaceStorage</code> folder or an individual session file. Defaulted to this device's standard VS Code storage path.</p>
+      <div class="label-row"><label for="path-input">VS CODE STORAGE FOLDER OR SESSION FILE</label><button type="button" class="link-button" id="reset-vscode-default">Reset to device default</button></div>
+      <div class="path-row"><input id="path-input" placeholder="C:\...\AppData\Roaming\Code\User\workspaceStorage" required autocomplete="off" spellcheck="false"><button type="button" class="button desktop-only" id="browse-folder" title="Browse VS Code workspaceStorage folders"><i data-lucide="folder-search"></i> Folder</button><button type="button" class="button desktop-only" id="browse-file" title="Choose a VS Code session file"><i data-lucide="file-search"></i> File</button></div>
+      <div class="path-hint"><i data-lucide="info"></i><span>Accepts <code>workspaceStorage</code>, a workspace hash folder, <code>chatSessions</code>, <code>state.vscdb</code>, or a <code>.jsonl / .json</code> file.</span></div>
+      <div class="dialog-switch-box"><i data-lucide="bot"></i><span>Using VS Code Agent Host or Copilot CLI?</span><button type="button" class="link-button" data-open-agent>Open Agent Host browser →</button></div>
       <div class="dialog-error" id="import-error" role="alert"></div>
       <div class="dialog-footer"><span><i data-lucide="shield-check"></i> Never uploaded anywhere</span><button class="button primary" id="import-submit" type="submit">Explore session <i data-lucide="arrow-up-right"></i></button></div>
     </form>
   </dialog>
+  <dialog id="open-agent-dialog">
+    <form id="open-agent-form">
+      <div class="dialog-icon"><i data-lucide="bot"></i></div><button type="button" class="icon-button dialog-close" data-close="open-agent-dialog" aria-label="Close"><i data-lucide="x"></i></button>
+      <div class="eyebrow accent">AGENT HOST &amp; COPILOT CLI · SESSION-STATE</div><h2>Open Agent Host / CLI sessions.</h2><p>Discover and explore persisted Agent Host &amp; Copilot CLI sessions (<code>events.jsonl</code> + <code>workspace.yaml</code>). Defaulted to this device's <code>.copilot\session-state</code> directory.</p>
+      <div class="label-row"><label for="agent-path-input">AGENT SESSION-STATE FOLDER OR FILE</label><button type="button" class="link-button" id="reset-agent-default">Reset to device default</button></div>
+      <div class="path-row"><input id="agent-path-input" class="dialog-input" placeholder="C:\Users\you\.copilot\session-state" required autocomplete="off" spellcheck="false"><button type="button" class="button desktop-only" id="browse-agent-folder" title="Browse .copilot\session-state folders"><i data-lucide="folder-search"></i> Folder</button><button type="button" class="button desktop-only" id="browse-agent-file" title="Choose an events.jsonl or workspace.yaml file"><i data-lucide="file-search"></i> File</button></div>
+      <div class="path-hint"><i data-lucide="info"></i><span>Accepts <code>.copilot\session-state</code>, an individual session UUID directory, <code>events.jsonl</code>, or <code>workspace.yaml</code>.</span></div>
+      <div class="dialog-switch-box"><i data-lucide="folder-open"></i><span>Looking for classic VS Code Chat panel history?</span><button type="button" class="link-button" data-open>← Open VS Code storage browser</button></div>
+      <div class="dialog-error" id="agent-import-error" role="alert"></div>
+      <div class="dialog-footer"><span><i data-lucide="shield-check"></i> Read-only local access</span><button class="button primary" id="agent-import-submit" type="submit">Explore agent sessions <i data-lucide="arrow-up-right"></i></button></div>
+    </form>
+  </dialog>
   <dialog id="help-dialog"><div class="help-content"><button class="icon-button dialog-close" data-close="help-dialog" aria-label="Close"><i data-lucide="x"></i></button><div class="eyebrow accent">UNDER THE SURFACE</div><h2>The full story, faithfully restored.</h2><p>Chronicle replays VS Code's persisted session log and joins available Copilot transcripts, debug events, model metadata, and editing checkpoints.</p><p>Reasoning is shown only when its text was actually saved. Opaque reasoning IDs cannot be decoded. Compacted, missing, or truncated source data cannot be recovered; raw records and source warnings remain available.</p><dl class="shortcut-list"><dt>Focus search</dt><dd><kbd>Ctrl / Cmd K</kbd></dd><dt>Navigate the tree</dt><dd><kbd>↑ ↓ Home End</kbd></dd><dt>Expand / collapse</dt><dd><kbd>→ ←</kbd></dd><dt>Open item</dt><dd><kbd>Enter</kbd></dd><dt>Close dialog</dt><dd><kbd>Esc</kbd></dd></dl><p class="muted">Local-only server. Read-only source access. No tool execution. Imported paths are remembered locally; source files are reloaded when the app restarts or you import them again.</p></div></dialog>
+  <dialog id="config-dialog" class="wide-dialog">
+    <form id="config-form">
+      <div class="dialog-icon"><i data-lucide="key-round"></i></div><button type="button" class="icon-button dialog-close" data-close="config-dialog" aria-label="Close"><i data-lucide="x"></i></button>
+      <div class="eyebrow accent">MICROSOFT FOUNDRY · .ENV CONFIGURATION</div>
+      <h2>Configure session summarizer.</h2>
+      <p>Enter your Microsoft Entra ID Service Principal and Microsoft Foundry Agent endpoint. Credentials are saved locally to <code>.env</code> before session summaries can be generated. See <code>/agentconfig</code> for Foundry Portal agent prompt and RBAC setup details.</p>
+      <div class="dialog-notice" id="config-required-banner" role="status" hidden><i data-lucide="info"></i><span>Save your Service Principal and Foundry Agent endpoint to <code>.env</code> before creating a session summary.</span></div>
+      <div class="form-grid">
+        <div>
+          <label for="cfg-tenant-id">DIRECTORY (TENANT) ID</label>
+          <input id="cfg-tenant-id" class="dialog-input" placeholder="00000000-0000-0000-0000-000000000000" required autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="cfg-client-id">APPLICATION (CLIENT) ID</label>
+          <input id="cfg-client-id" class="dialog-input" placeholder="00000000-0000-0000-0000-000000000000" required autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <label for="cfg-client-secret">CLIENT SECRET <span class="label-note" id="cfg-secret-hint"></span></label>
+      <input id="cfg-client-secret" class="dialog-input" type="password" placeholder="Enter Entra ID client secret value" autocomplete="new-password" spellcheck="false">
+      <label for="cfg-agent-endpoint">MICROSOFT FOUNDRY AGENT ENDPOINT</label>
+      <input id="cfg-agent-endpoint" class="dialog-input" placeholder="https://<resource>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/openai/responses?api-version=v1" required autocomplete="off" spellcheck="false">
+      <div class="form-grid">
+        <div>
+          <label for="cfg-agent-name">AGENT NAME / ID <span class="label-note">(required if using a project URL)</span></label>
+          <input id="cfg-agent-name" class="dialog-input" placeholder="chronicle-session-summarizer" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="cfg-output-dir">SUMMARY OUTPUT FOLDER <span class="label-note">(optional)</span></label>
+          <div class="path-row"><input id="cfg-output-dir" class="dialog-input" placeholder="summaries" autocomplete="off" spellcheck="false"><button type="button" class="button desktop-only" id="browse-output-dir" title="Choose output folder"><i data-lucide="folder-search"></i></button></div>
+        </div>
+      </div>
+      <div class="config-feedback" id="config-feedback" role="alert" hidden></div>
+      <div class="config-log-row" id="config-test-log-wrap" hidden><a href="/log.html" id="config-test-log-link" class="log-link"><i data-lucide="scroll-text"></i> View connectivity test log</a></div>
+      <div class="dialog-footer config-footer">
+        <span id="cfg-env-path" title="Local .env file"><i data-lucide="file-lock-2"></i> Saved locally to .env</span>
+        <div class="dialog-actions">
+          <button class="button" id="test-config-button" type="button"><i data-lucide="plug-zap"></i> Test connection</button>
+          <button class="button primary" id="save-config-submit" type="submit"><i data-lucide="save"></i> Save to .env</button>
+          <button class="button primary" id="continue-summary-button" type="button" hidden><i data-lucide="file-text"></i> Summarize now</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="summary-progress-dialog" class="wide-dialog">
+    <div class="summary-progress-content">
+      <div class="dialog-icon" id="summary-dialog-icon"><i data-lucide="file-text"></i></div>
+      <button type="button" class="icon-button dialog-close" data-close="summary-progress-dialog" aria-label="Close"><i data-lucide="x"></i></button>
+      <div class="eyebrow accent">SESSION HANDOFF SUMMARY</div>
+      <h2 id="summary-dialog-title">Creating session summary...</h2>
+      <p id="summary-dialog-subtitle">Preparing portable Markdown handoff document.</p>
+      <div class="summary-progress-box">
+        <div class="summary-progress-head">
+          <span id="summary-progress-status"><span class="spinner inline-spinner"></span> Starting operation...</span>
+          <span id="summary-progress-elapsed" class="muted">0.0 s</span>
+        </div>
+        <div class="index-bar large"><span id="summary-progress-fill" style="width:5%"></span></div>
+        <div class="summary-stats-row" id="summary-progress-stats" hidden></div>
+      </div>
+      <div class="dialog-error summary-error-box" id="summary-progress-error" role="alert" hidden></div>
+      <div class="source-path" id="summary-saved-path" hidden></div>
+      <div class="dialog-footer summary-footer">
+        <a href="/log.html" id="summary-log-link" class="log-link"><i data-lucide="scroll-text"></i> View operation log</a>
+        <div class="dialog-actions">
+          <button type="button" class="button" id="summary-copy-button" hidden><i data-lucide="copy"></i> Copy summary</button>
+          <a class="button primary" id="summary-download-link" hidden><i data-lucide="download"></i> Download .md</a>
+          <button type="button" class="button" data-close="summary-progress-dialog" id="summary-close-button">Close</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="summary-log-dialog" class="wide-dialog">
+    <div class="summary-log-modal">
+      <button type="button" class="icon-button dialog-close" data-close="summary-log-dialog" aria-label="Close"><i data-lucide="x"></i></button>
+      <div class="eyebrow accent">SUMMARY OPERATION LOG</div>
+      <h2 id="fallback-log-title">Operation log</h2>
+      <div class="fallback-log-scroll" id="fallback-log-entries"></div>
+      <div class="dialog-footer">
+        <span id="fallback-log-count" class="muted">0 entries</span>
+        <div class="dialog-actions">
+          <button type="button" class="button primary" id="fallback-copy-log"><i data-lucide="copy"></i> Copy log</button>
+          <button type="button" class="button" data-close="summary-log-dialog">Close</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
