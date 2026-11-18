@@ -103,10 +103,9 @@ test('dual defaulted Open browsers, Agent Host session exploration, session sort
     await page.locator('#import-submit').click();
     await expect(page.locator('#open-dialog')).toBeHidden();
 
-    // Return to library if single-session import auto-opened vs-1
-    if (await page.locator('#back-to-library').isVisible()) {
-      await page.locator('#back-to-library').click();
-    }
+    // Single-session import auto-opens vs-1; wait for it to enter session mode and return to library
+    await expect(page.locator('#back-to-library')).toBeVisible();
+    await page.locator('#back-to-library').click();
 
     const demoGroup = page.locator('.library-group').filter({ hasText: 'sort-demo' });
     await expect(demoGroup.locator('.session-card')).toHaveCount(3);

@@ -36,6 +36,7 @@ Your job is to transform structured VS Code / GitHub Copilot chat session digest
    Produce the complete, standalone Markdown handoff document using the exact structure and rules below.
 
 ### Core Principles
+- **Zero-Package Architecture (No Node/npm Dependencies):** Never introduce, recommend, or rely on external Node.js / npm runtime packages (`npm install <pkg>`). Every capability—HTTP servers, routing, line diffing, Markdown parsing, HTML sanitization, syntax highlighting, icons, and configuration parsing—must be designed directly into the application source code using built-in Node.js modules (`node:*`) and native browser APIs. Preserve and call out this zero-dependency invariant in every handoff summary so resuming agents never add third-party packages.
 - **Actionable Cross-Machine Continuity:** Convert machine-specific absolute paths (e.g., `C:\Users\alice\repos\app\src\index.js`) into portable repository-relative paths (`src/index.js`) while noting the original workspace root once in the metadata header.
 - **Comprehensive Signal, Zero Fluff:** Synthesize ALL provided sources—user prompts, assistant replies, persisted reasoning/thoughts, tool calls & arguments, terminal/test outputs, subagent results, sidecar events, and reconstructed file edits/snapshots.
 - **Strict Token Discipline:** Keep the final document compact and dense (target ~600–2,200 words scaled to session complexity). Prefer concise bullet points, inline code identifiers (`functionName`, `path/to/file.js`), and compact tables over narrative prose. Do NOT paste entire source files or repetitive raw tool logs; capture exact identifiers, signatures, commands, diffs/intent, and error messages that matter for continuation.
@@ -77,8 +78,8 @@ Provide a compact Markdown table or grouped bullet list of touched files (`Creat
 - Tool failures, build/test errors, runtime bugs, or dead-end approaches encountered during the session, their root causes, and how they were resolved (or why they remain blocked) so the resuming agent does not repeat them.
 
 ## 8. Environment & Setup Context for Another Machine
-- Runtime, package manager, dependencies added/changed, required environment variables (names/purpose only—never include raw secrets), ports, or local setup steps needed on a fresh machine.
+- Runtime (Node.js built-ins only—explicitly state the zero-npm-package policy so the resuming agent designs all logic directly into source code rather than installing packages), required environment variables (names/purpose only—never include raw secrets), ports, or local setup steps needed on a fresh machine.
 
 ## 9. Next Steps for Resuming Agent
-1. Ordered, concrete, immediately executable checklist for an agent picking up this task on another machine (starting with verifying workspace state / running baseline checks, followed by remaining implementation and validation steps).
+1. Ordered, concrete, immediately executable checklist for an agent picking up this task on another machine (starting with verifying workspace state / running baseline checks, maintaining the zero-package architecture by building directly in source code, followed by remaining implementation and validation steps).
 ```
