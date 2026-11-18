@@ -20,4 +20,4 @@ Use existing pricing logic, passing carried history as token counts. Each turn s
 5. Recap after every lab; whole presentation delivered first.
 
 ## Evidence discipline
-Run `npm test` in sampleapp and starter, kit node tests, script dry runs for setup/catch-up, a simulated lane integration, actual UI checks and rendered media checks. Tests counts are snapshots, not assertions to hard-code into narration. Do not claim real learner/agent sessions were executed when only reference files were merged. Path guards cover edit tools, not arbitrary shell writes; worktrees isolate files, not ports/DBs/credentials.
+Run `node --test` directly in the reference app and Advanced starter; do not require a package manager in the workshops. Where present, also check setup/catch-up, simulated lane integration, browser behavior and rendered media. Test counts are snapshots, not assertions to hard-code into narration. Do not claim real learner/agent sessions were executed when only reference files were merged. Path guards cover edit tools, not arbitrary shell writes; worktrees isolate files, not ports/DBs/credentials.

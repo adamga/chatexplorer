@@ -61,7 +61,7 @@ Now build the complete Chronicle browser UI in `public/index.html`, `public/styl
    - **Read full session** streams the entire multi-turn conversation chronologically.
    - Sanitize all rendered Markdown links so `http(s)://` opens safely with `rel="noopener noreferrer"` and local file references are disabled rather than executed.
 
-5. Update `package.json` `"check"` script to check `public/icons.js`, `public/markdown.js`, and `public/app.js`, then run `npm run check` and `npm test` to verify zero errors (do not launch browser/DevTools MCP tools or leave background servers running—the user will run `npm start` in Step 3)!
+5. Run `node --check` separately on `public/icons.js`, `public/markdown.js`, and `public/app.js`, then run `node --test`. Leave `package.json` unchanged. Do not launch browser/DevTools MCP tools or leave background servers running; the learner starts the server in Step 3.
 ```
 
 ---
@@ -72,7 +72,7 @@ Let's start your brand-new zero-package application!
 
 1. In your VS Code Terminal (`` Ctrl+` ``), run:
    ```powershell
-   npm start
+   node --max-old-space-size=8192 src/server.js
    ```
 2. Hold `Ctrl` and click **http://127.0.0.1:3210** (or open that URL in Edge / Chrome).
 3. Try out everything you built:

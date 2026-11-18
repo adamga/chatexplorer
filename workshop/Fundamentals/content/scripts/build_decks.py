@@ -456,7 +456,7 @@ def build_fundamentals_deck() -> Path:
             [
                 "Copy one clear, bite-sized prompt into Copilot Agent mode",
                 "Peek at the files Copilot wrote in the Explorer sidebar",
-                "Run npm test to see green checkmarks prove it works!",
+                "Run node --test to see green checkmarks prove it works!",
             ],
             ACCENT_AMBER,
         ),
@@ -490,7 +490,7 @@ def build_fundamentals_deck() -> Path:
         ("Stage", "Time", "What You & Copilot Do Together", "Victory Checkpoint"),
         ("Lab 00 · Setup", "7 min", "Check Node v22+, open sampleapp folder, pick Frontier Model", "Empty folder trusted & Agent ready"),
         ("Lab 01 · Rulebook", "8 min", "Create .github/copilot-instructions.md & package.json", "0 dependencies in package.json"),
-        ("Lab 02 · Brain", "15 min", "Build Myers line diff, dual session parser & search library", "npm test passes with 0 failures"),
+        ("Lab 02 · Brain", "15 min", "Build Myers line diff, dual session parser & search library", "node --test passes with 0 failures"),
         ("Lab 03 · Server", "10 min", "Build local 127.0.0.1:3210 web server with node:http", "Security & API routes pass tests"),
         ("Lab 04 · Browser UI", "20 min", "Build SVG icons, Markdown, Dark/White UI & explore live!", "App live at http://127.0.0.1:3210/"),
     ]
@@ -650,7 +650,7 @@ def build_fundamentals_deck() -> Path:
         "What Prompt #1 Creates for You",
         [
             "1. .github/copilot-instructions.md — strict Zero-Package Rule!",
-            "2. package.json — npm start, npm test, npm run check (NO dependencies section at all!)",
+            "2. package.json: type module, no scripts or dependencies",
             "3. .gitignore — keeps local cache files neat and tidy",
             "Click Keep when Copilot finishes!",
         ],
@@ -664,7 +664,7 @@ def build_fundamentals_deck() -> Path:
         [
             "# Ground Rules for Copilot",
             "- ZERO NPM PACKAGES ALLOWED!",
-            "- Never run npm install",
+            "- Run Node directly; no npm or npx",
             "- Backend: only node:http, node:fs...",
             "- Tests: only node:test & node:assert",
             "- Frontend: plain HTML/CSS/JS + SVG",
@@ -732,17 +732,17 @@ def build_fundamentals_deck() -> Path:
     add_footer(s12, 12, total)
 
     # ---------------- SLIDE 13: LAB 02 RECAP ----------------
-    s13 = add_blank_slide(prs, "Celebrate seeing npm test print green 'ok' lines with zero testing libraries installed!")
+    s13 = add_blank_slide(prs, "Celebrate seeing node --test print green 'ok' lines with zero testing libraries installed!")
     add_header(
         s13,
         "LAB 02 RECAP  ·  HIGH-FIVE CHECK",
         ACCENT_GREEN,
         "Green Checkmarks! Your Engine Reads History & Diffs",
-        "Run npm test in Terminal — watch Node's built-in test runner verify everything!",
+        "Run node --test in Terminal — watch Node's built-in test runner verify everything!",
     )
     add_code_panel(
         s13, 0.6, 2.05, 5.65, 4.55,
-        "PS sampleapp> npm test",
+        "PS sampleapp> node --test",
         [
             "✔ diffLines keeps newline tokens & merges chunks",
             "✔ replay blocks prototype pollution keys",
@@ -750,7 +750,7 @@ def build_fundamentals_deck() -> Path:
             "✔ loadSession pairs tools & edit diffs",
             "✔ library indexes & searches both formats",
             "",
-            "# pass 15+  |  fail 0  |  0 npm packages!",
+            "# fail 0  |  0 external packages!",
         ],
         accent=ACCENT_GREEN,
     )
@@ -786,13 +786,13 @@ def build_fundamentals_deck() -> Path:
     add_footer(s14, 14, total)
 
     # ---------------- SLIDE 15: LAB 03 RECAP ----------------
-    s15 = add_blank_slide(prs, "Quick check: npm run check && npm test both pass with 0 errors, and Agent sessions also get their own default path!")
+    s15 = add_blank_slide(prs, "Quick check: node --check src/server.js && node --test both pass with 0 errors, and Agent sessions also get their own default path!")
     add_header(
         s15,
         "LAB 03 RECAP  ·  HIGH-FIVE CHECK",
         ACCENT_GREEN,
         "Two Smart Doors Ready for Your Browser!",
-        "Run npm run check and npm test — your backend is 100% complete!",
+        "Run node --check on changed files and node --test — your backend is 100% complete!",
     )
     add_card(
         s15, 0.6, 2.05, 5.7, 4.65,
@@ -850,13 +850,13 @@ def build_fundamentals_deck() -> Path:
     # ---------------- SLIDE 17: LAB 04 LIVE TREASURE HUNT ----------------
     s17 = add_blank_slide(
         prs,
-        "Everyone runs npm start and opens http://127.0.0.1:3210/! Have them find the very workshop conversation they are having right now inside Agent sessions!",
+        "Everyone runs node --max-old-space-size=8192 src/server.js and opens http://127.0.0.1:3210/! Have them find the very workshop conversation they are having right now inside Agent sessions!",
     )
     add_header(
         s17,
         "LAB 04 LIVE PLAYTIME!",
         ACCENT_GREEN,
-        "Run npm start & Explore http://127.0.0.1:3210/",
+        "Launch Chronicle in your browser",
         "Try this 5-item Treasure Hunt inside your brand-new Chronicle app:",
     )
     add_card(
@@ -907,7 +907,7 @@ def build_fundamentals_deck() -> Path:
         [
             "→  Build an Orchestrator + 4 Specialist Agents (Dev, Test, Security, Docs) with Custom Skills!",
             "→  Connect Microsoft Foundry AI to summarize sessions into <session>-summary.md handoff docs",
-            "→  Package Chronicle into a Windows Desktop App & Installer!",
+            "→  Verify a package-free browser release!",
         ],
         accent=ACCENT_PURPLE,
         fill_rgb=BG_CARD_ALT,
@@ -999,8 +999,8 @@ def build_instructor_deck() -> Path:
         ("Clock", "Lab Stage", "Facilitator Action", "Watch-For Signal"),
         ("00–07m", "Lab 00 · Setup (7m)", "Live-demo finished app (90s), guide Open Folder -> sampleapp", "Check Explorer title says SAMPLEAPP"),
         ("07–15m", "Lab 01 · Rulebook (8m)", "Paste Prompt #1 together; spotlight 'Used 1 reference' badge", "Confirm 0 dependencies in package.json"),
-        ("15–30m", "Lab 02 · Parser & Diff (15m)", "Explain LEGO diff/replay story while Copilot codes (~4m)", "Everyone sees green pass in npm test"),
-        ("30–40m", "Lab 03 · HTTP Server (10m)", "Explain 127.0.0.1 lock-and-key while Copilot builds server.js", "npm run check && npm test pass"),
+        ("15–30m", "Lab 02 · Parser & Diff (15m)", "Explain LEGO diff/replay story while Copilot codes (~4m)", "Everyone sees green pass in node --test"),
+        ("30–40m", "Lab 03 · HTTP Server (10m)", "Explain 127.0.0.1 lock-and-key while Copilot builds server.js", "node --check src/server.js && node --test pass"),
         ("40–60m", "Lab 04 · Browser UI (20m)", "Run Step 1 then Step 2; lead group Treasure Hunt on :3210!", "Learners open their own live Agent chat!"),
     ]
     t_s = s4.shapes.add_table(len(ros), 4, Inches(0.6), Inches(2.02), Inches(12.13), Inches(4.7))
@@ -1038,7 +1038,7 @@ def build_instructor_deck() -> Path:
         "Teach 'Trust, But Verify'",
         [
             "Have students open package.json after Lab 01 to prove dependencies is gone",
-            "Always run npm test in Terminal — green tests beat guessing!",
+            "Always run node --test in Terminal — green tests beat guessing!",
         ],
         accent=ACCENT_GREEN,
     )
@@ -1087,8 +1087,8 @@ def build_instructor_deck() -> Path:
         "Pitfall 3: Windows EBUSY Lock or Port 3210 Busy",
         [
             "Symptom: EADDRINUSE: 127.0.0.1:3210 or EBUSY cleaning temp folder.",
-            "Cause: Previous npm start terminal still running, or tests wrote inside workspace public/ while VS Code watched it.",
-            "30s Fix: Press Ctrl+C in old terminal (or set $env:PORT=3211; npm start). Keep test fixtures in os.tmpdir()!",
+            "Cause: Previous node --max-old-space-size=8192 src/server.js terminal still running, or tests wrote inside workspace public/ while VS Code watched it.",
+            "30s Fix: Press Ctrl+C in old terminal (or set $env:PORT=3211; node --max-old-space-size=8192 src/server.js). Keep test fixtures in os.tmpdir()!",
         ],
         accent=ACCENT_CYAN,
     )
@@ -1122,7 +1122,7 @@ def build_instructor_deck() -> Path:
         s8, 7.05, 2.05, 5.68, 4.65,
         "UNIVERSAL RESCUE PROMPT",
         [
-            "Run npm run check and npm test,",
+            "Run node --check on changed files and node --test,",
             "inspect any failing assertion or",
             "syntax error, and fix the bug in",
             "src/ or public/ without adding",
@@ -1168,7 +1168,7 @@ def build_instructor_deck() -> Path:
         [
             "→  1 Orchestrator Agent dispatching to Dev, Test, Security & Docs Specialist Agents + reusable SKILL.md packs",
             "→  Microsoft Foundry AI session-handoff summaries (<session>-summary.md)",
-            "→  Electron Desktop App + Windows NSIS Setup Installer!",
+            "→  Package-free browser release + desktop architecture review!",
         ],
         accent=ACCENT_PURPLE,
         fill_rgb=BG_CARD_ALT,

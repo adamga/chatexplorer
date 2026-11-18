@@ -44,12 +44,12 @@ Now let's build the zero-dependency session discovery, parser, diff engine, and 
    - `src/indexer.js`: Child-process worker (`process.on('message', ...)`) that calls `loadSession`, `summarizeSession`, and `buildCorpus` so indexing big sessions never blocks the server.
    - `src/library.js`: `createLibrary({ cacheDir })` that queues indexing smallest-first in a forked worker, caches summaries and search corpora to disk keyed by file size + mtime signatures, hides 0-prompt empty sessions (counting them in `empty`), keeps an LRU cache of loaded sessions, and provides `addPath`, `list`, `getSession`, `search(query, { session })`, `idle`, and `close`.
 
-4. Update `package.json` `"check"` script to run `node --check` on `src/diff.js`, `src/parser.js`, `src/indexer.js`, and `src/library.js`.
+4. Run `node --check` separately on `src/diff.js`, `src/parser.js`, `src/indexer.js`, and `src/library.js`. Leave `package.json` unchanged.
 
-5. Create `test/parser.test.js` using ONLY `node:test` and `node:assert/strict` with temporary `os.tmpdir()` fixtures testing `diffLines`, mutation `replay` (including prototype-pollution protection), `parseWorkspaceYaml`, discovering & loading both a VS Code `chatSessions` session and a `.copilot/session-state` `events.jsonl` session, and searching across both via `createLibrary`. Run `npm test` and fix any issues until all tests pass!
+5. Create `test/parser.test.js` using ONLY `node:test` and `node:assert/strict` with temporary `os.tmpdir()` fixtures testing `diffLines`, mutation `replay` (including prototype-pollution protection), `parseWorkspaceYaml`, discovering & loading both a VS Code `chatSessions` session and a `.copilot/session-state` `events.jsonl` session, and searching across both via `createLibrary`. Run `node --test` and fix any issues until all tests pass!
 ```
 
-*(Allow Copilot to run `npm test` in the terminal when prompted!)*
+*(Allow Copilot to run `node --test` in the terminal when prompted!)*
 
 ---
 
@@ -58,7 +58,7 @@ Now let's build the zero-dependency session discovery, parser, diff engine, and 
 Once Copilot finishes, click into your VS Code Terminal (`` Ctrl+` ``) and run:
 
 ```powershell
-npm test
+node --test
 ```
 
 ### What You Should See
@@ -73,9 +73,9 @@ Every test in `test/parser.test.js` prints `ok` (`pass` with `fail 0`)—and not
 
 ## 🛟 Quick Rescue Prompt (Only If a Test Fails)
 
-If `npm test` reports any error, paste this into Copilot Chat:
+If `node --test` reports any error, paste this into Copilot Chat:
 ```text
-Run `npm test`, inspect the failing assertion, and fix the bug in `src/` without adding any npm packages until all tests pass.
+Run `node --test`, inspect the failing assertion, and fix the bug in `src/` without adding any npm packages until all tests pass.
 ```
 
 ---
@@ -83,6 +83,6 @@ Run `npm test`, inspect the failing assertion, and fix the bug in `src/` without
 ## ✅ Lab 02 Checkpoint
 
 - [x] `src/diff.js`, `src/parser.js`, `src/indexer.js`, and `src/library.js` exist.
-- [x] `npm test` passes with `0` failures and zero external packages.
+- [x] `node --test` passes with `0` failures and zero external packages.
 
 👉 **Next up: [Lab 03 — Zero-Package Local Web Server](./Lab-03-Zero-Package-Web-Server.md)**

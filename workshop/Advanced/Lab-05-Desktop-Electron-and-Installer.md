@@ -1,85 +1,52 @@
-# Lab 05 — Desktop Electron Shell, Zero-Package Icon Renderer & Windows Setup Installer
+# Lab 05 — Package-Free Browser Release & Desktop Architecture Review
 
-⏱️ **Estimated Time:** 17 minutes
+**Estimated time:** 17 minutes
 
----
+**Starting checkpoint:** Advanced Lab 04, with the summarizer and operation log working.
 
 ## Goal
 
-In our final lab, we will turn Chronicle from a local browser tab into a native **Windows Desktop Application** with a per-user **Windows Setup Installer (`Chronicle-Setup-1.0.0.exe`)**!
+Use your specialist team to add a locally generated browser tab icon and verify that the finished app still runs with only Node.js 22+ and a browser. Review the optional desktop wrapper without installing or building it.
 
-### How Do We Keep Our Zero-Package Rule with Electron?
-- **Inside the application (`"dependencies"`):** Still **empty (zero runtime npm packages)**! Even our icon generator (`build/render-icon.cjs`, which creates the 512×512 `build/icon.png` and multi-resolution `build/icon.ico`) will be written in pure Node.js using built-in `node:zlib`!
-- **Build-only packaging tools (`"devDependencies"`):** Only `electron` (the Chromium/Node desktop binary) and `electron-builder` (the NSIS `.exe` packager) are added as `devDependencies`. When `electron-builder` creates `resources\app.asar`, **zero `node_modules`** are bundled inside your packaged app!
-- **`.env` Settings in Desktop Mode:** Installed Windows apps live inside a read-only `app.asar` archive, so `electron/main.mjs` stores writable settings and `.env` in `%APPDATA%\Chronicle\`—and automatically seeds `%APPDATA%\Chronicle\.env` from your local `.env` file on first launch!
+## Step 1 — Delegate the release change (8 minutes)
 
----
+From `workshop/Advanced/sampleapp`, copy `render-icon.cjs` from the repository's [`appsample/build/`](../../appsample/build/) into your own `build/` folder. This is the reference renderer, not the Electron runtime. If that path already exists in your workspace, inspect it rather than overwriting your work.
 
-## Step 1 — Command `Chronicle Orchestrator` to Build the Electron App & Installer Config (10 Minutes)
-
-With **`Chronicle Orchestrator`** selected in Copilot Chat, paste the prompt below and press **Enter**:
+Select **Chronicle Orchestrator** in Copilot Chat and paste. The tester can draft the checks while the developer works, but should run them only after the icon is in `public/`.
 
 ```text
-Orchestrate our agent team (Developer, Security, Tester, and Documentation) to add the Windows Desktop Electron shell, pure-Node icon generator, and Windows NSIS installer configuration—while keeping `"dependencies"` completely absent so zero `node_modules` are bundled inside `app.asar`:
+Prepare the Chronicle browser release. Do not invoke npm or npx or add dependencies.
 
-1. Pure-Node Icon Generator (`build/icon.svg` + `build/render-icon.cjs`):
-   - Create `build/icon.svg` (Chronicle dark-emerald rounded square with lime chat bubble and orbit ring).
-   - Create `build/render-icon.cjs` using ONLY built-in `node:fs`, `node:path`, and `node:zlib` (`deflateSync` + CRC32 PNG encoder + multi-size `16..256` Windows `.ico` header) to generate `build/icon.png` (512x512) and `build/icon.ico` with zero external packages. Run `node build/render-icon.cjs` to generate both files.
+1. Developer: Run node build/render-icon.cjs to generate build/icon.png and build/icon.ico. Copy the generated PNG to public/chronicle-icon.png and replace the existing inline favicon in public/index.html with <link rel="icon" type="image/png" href="/chronicle-icon.png">. Do not change any routes or settings.
+2. Tester: Write test/release-icon.test.js using node:test and node:assert/strict. Follow the setup and teardown in test/zero-deps.test.js: start the loopback server with port: 0, loadSamples: false, and a temporary data directory. Assert that the page references the new favicon, then request /chronicle-icon.png and assert status 200, image/png, and the PNG signature. Run node --check build/render-icon.cjs and node --test.
+3. Security: Review the diff for local-only assets and confirm that no new third-party dependencies, secrets, or chat history files were added.
+4. Documentation: Update README.md with browser start and test commands and the source of the generated icon. Desktop packaging is not required.
 
-2. Sandboxed Electron Desktop Process Architecture (`electron/main.mjs`, `electron/backend.mjs`, `electron/preload.cjs`):
-   - `electron/backend.mjs`: Runs `startServer({ port: options.port ?? 0, dataDir: options.dataDir, paths: options.paths })` inside an Electron `utilityProcess` so parsing multi-hundred-MB chat histories never blocks or crashes the UI window, posting `{ type: 'ready', url, port }` back to `main.mjs`.
-   - `electron/preload.cjs`: Uses `contextBridge.exposeInMainWorld('chronicleDesktop', { pick(kind), onOpen(callback) })` allowing kinds `'folder'`, `'file'`, `'agent-folder'`, and `'agent-file'`.
-   - `electron/main.mjs`:
-     - Enforces single-instance lock, sets `appId` `com.chronicle.chatexplorer`, creates `userData` directory (`%APPDATA%\Chronicle`), and seeds `<userData>\.env` on first run if missing by copying from `CHRONICLE_ENV_FILE`, `process.cwd()/.env`, `dirname(process.execPath)/.env`, or repo `.env` in dev mode!
-     - Starts and auto-restarts `electron/backend.mjs` in `utilityProcess.fork` with `--max-old-space-size=8192`.
-     - Implements `ipcMain.handle('chronicle:pick', ...)` opening native OS Folder/File dialogs defaulted to `%APPDATA%\Code\User\workspaceStorage` for VS Code picks and `%USERPROFILE%\.copilot\session-state` for Agent picks!
-     - Creates `BrowserWindow` with `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`, `spellcheck: false`, denies permissions, opens external `http(s)://` URLs via `shell.openExternal`, and in `setWindowOpenHandler` explicitly allows local `${backendUrl}/log.html` popup windows (with matching sandboxed `webPreferences`) so the Summary Operation Log popup works natively on desktop!
-     - Adds File menu shortcuts for `Open VS Code session…` (`CmdOrCtrl+O`) and `Open Agent / Copilot CLI sessions…` (`CmdOrCtrl+Shift+O`).
-
-3. Native Picker Buttons in Browser UI (`public/index.html`, `public/app.js`, `public/styles.css`):
-   - Add `.desktop-only` native **Folder** and **File** picker buttons inside `#open-dialog`, `#open-agent-dialog`, and `#config-dialog` (`Summary Output Folder`) that appear automatically when `window.chronicleDesktop` is present (`document.body.classList.add('desktop')`).
-
-4. Package & NSIS Setup Configuration (`package.json` + `.gitignore`):
-   - Keep `"dependencies"` completely omitted!
-   - Add `"main": "electron/main.mjs"`, `"productName": "Chronicle"`, `"author": "Chronicle"`, scripts `"icon": "node build/render-icon.cjs"`, `"desktop": "electron ."`, `"pack": "electron-builder --win dir --x64"`, `"dist": "electron-builder --win nsis --x64"`, and update `"check"` to also check `build/render-icon.cjs`, `electron/main.mjs`, `electron/preload.cjs`, and `electron/backend.mjs`.
-   - Add `"devDependencies"` (`"electron": "^45.2.3"`, `"electron-builder": "^26.18.0"`) and `"build"` config targeting Windows x64 NSIS (`perMachine: false`, `oneClick: false`, `allowToChangeInstallationDirectory: true`, desktop & Start Menu shortcuts, packaging `package.json`, `src/**/*`, `public/**/*`, `electron/**/*`, `agentconfig/**/*`, `build/icon.png`—never `.env`!).
-   - Ensure `dist/` is in `.gitignore`.
-
-5. Quality Gates:
-   - Have `Chronicle Security` audit `electron/main.mjs` and `electron/preload.cjs` against every Electron sandbox rule and confirm `.env` is excluded from `"build.files"`.
-   - Have `Chronicle Tester` run `npm run icon && npm run check && npm test`.
-   - Have `Chronicle Documentation` update `README.md` with desktop & installer build instructions.
+Allowed changes: build/ icon files, public/chronicle-icon.png, public/index.html, test/release-icon.test.js, and README.md. Preserve package.json, server behavior, .env, and original chat histories. Stop after the test and review; the learner will do the browser check.
 ```
 
----
+## Step 2 — Verify the browser release (6 minutes)
 
-## Step 2 — Build & Launch Your Windows Desktop App & Setup Program! (7 Minutes)
-
-Once **Chronicle Orchestrator** finishes and all unit/security checks pass, install the Electron packager CLI tools and build your Windows installer in the VS Code Terminal:
+If Lab 04's server is still running, stop it with **Ctrl+C**. In the learner workspace run:
 
 ```powershell
-# 1. Install build-only Electron packager tools (zero runtime app dependencies!)
-npm install
-
-# 2. Launch the desktop app directly from source to test native Folder/File pickers & .env seeding
-npm run desktop
+node --check build/render-icon.cjs
+node --test
+node --max-old-space-size=8192 src/server.js
 ```
 
-Try clicking **Open session → Folder** and **Agent sessions → Folder** inside the desktop window—notice native Windows Explorer dialogs open directly at `workspaceStorage` and `.copilot\session-state`, and **Summary agent** already has your `.env` settings loaded! Close the desktop window when verified, then build the Windows Setup installer:
+Open `http://127.0.0.1:3210/`. Look for the Chronicle icon in the tab and open `http://127.0.0.1:3210/chronicle-icon.png` to verify the asset directly. Open a session and check that its conversation still loads. If Foundry is configured, create a summary and open the operation log, as in Lab 04. Otherwise, use the mocked summarizer tests and don't count this as a live Foundry check. Stop the server with **Ctrl+C**.
 
-```powershell
-# 3. Package the Windows Setup Installer (.exe)
-npm run dist
-```
+If the icon is missing, verify `public/chronicle-icon.png` exists and try a fresh browser tab after checking the asset URL. If the port is occupied, stop your previous server or set it to `3211` (`$env:PORT=3211` in PowerShell; `export PORT=3211` in macOS/Linux) before running the start command, then use that port in both browser URLs.
 
-When `electron-builder` finishes (notice the log line `no node modules found in collection`—confirming **zero `node_modules`** were packed into your app!), check your `dist\` folder:
-- **`dist\win-unpacked\Chronicle.exe`** — standalone unpacked desktop executable
-- **`dist\Chronicle-Setup-1.0.0.exe`** — full Windows Setup Wizard with install-directory picker, Start Menu shortcut, and Desktop shortcut!
+## Step 3 — Review and recap (3 minutes)
 
----
+Read the reference [`main.mjs`](../../appsample/electron/main.mjs), [`preload.cjs`](../../appsample/electron/preload.cjs), and [`package.json`](../../appsample/package.json) without modifying them.
 
-## 🏆 Workshop Complete! Look What You Engineered in 90 Minutes
+- **What changes in desktop mode?** Electron hosts the same web UI in a sandboxed window, runs the server in a separate utility process, and exposes native pickers through a narrow preload bridge.
+- **Why aren't build tools workshop prerequisites?** The browser release uses Node built-ins. Electron and electron-builder are needed only to run the desktop source or package the Windows installer.
+- **Where should `.env` live?** Outside the installer and source control. The desktop wrapper uses a writable per-user directory; the packaging allowlist excludes `.env`.
 
-1. **Multi-Agent Architecture (`.github/agents/`):** Designed a single **Chronicle Orchestrator** coordinating least-privilege **Developer**, **Tester**, **Security**, and **Documentation** role subagents.
-2. **Reusable Agent Skills (`.github/skills/`):** Authored 4 domain `SKILL.md` modules following the open Agent Skills specification and bound them to your specialist agents.
-3. **Zero-Package End-to-End Engineering:** Added Entra ID Service Principal OAuth2, Microsoft Foundry LLM session handoff summarization (`<session-name>-summary.md`) with map-reduce chunking, a live progress dialog, a popup log viewer with clipboard copy, pure-Node PNG/ICO icon rendering, and a sandboxed Windows Electron + NSIS setup installer—with **zero runtime npm packages**!
+**Checkpoint:** Node tests pass, the icon loads locally, the browser still opens sessions, and no package install was needed.
+
+**Stretch:** Trace which files would be shipped using the reference `build.files` allowlist. For maintainers who want to build a Windows installer after the workshop, see the [desktop build instructions](../../appsample/README.md#windows-desktop-app-optional-maintainer-workflow).

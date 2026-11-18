@@ -38,7 +38,7 @@ Orchestrate our agent team (Developer, Documentation, Security, and Tester) to b
 
 4. Quality Gates:
    - Have `Chronicle Security` audit secret handling, redaction, HTTPS checks, and zero-package compliance.
-   - Have `Chronicle Tester` create `test/summarizer.test.js` mocking Entra OAuth2 and Foundry `/responses` over local `node:http` and run `npm run check && npm test` until all checks and tests pass!
+   - Have `Chronicle Tester` create `test/summarizer.test.js` mocking Entra OAuth2 and Foundry `/responses` over local `node:http` and run `node --check <file>` for each changed JavaScript file and `node --test` until all checks and tests pass!
 ```
 
 Watch in the Copilot Chat UI as **Chronicle Orchestrator** creates todos and delegates sub-tasks across your Developer, Documentation, Security, and Tester subagents!
@@ -51,7 +51,7 @@ Once the Orchestrator reports that Security and Tester gates have passed:
 
 1. Start the server in your VS Code Terminal:
    ```powershell
-   npm start
+   node --max-old-space-size=8192 src/server.js
    ```
 2. Open **http://127.0.0.1:3210** in your browser.
 3. Click **Summary agent** in the top-right bar to open the **Configure session summarizer** dialog.
@@ -74,6 +74,6 @@ Once the Orchestrator reports that Security and Tester gates have passed:
 
 - [x] `agentconfig/README.md` and `agentconfig/agent-instructions.md` exist and include the zero-package rule.
 - [x] Credentials save cleanly to `.env` (git-ignored) and **Test connection** succeeds against the workshop Foundry Agent!
-- [x] `npm run check && npm test` passes with Security sign-off.
+- [x] Per-file `node --check` commands and `node --test` pass with Security sign-off.
 
 👉 **Next up: [Lab 04 — Comprehensive LLM Session Summarizer, Progress Dialog & Log Popup](./Lab-04-Session-Summarizer-and-Log-Popup.md)**

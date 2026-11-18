@@ -34,7 +34,7 @@ Before we start, make sure you have three things ready:
 
 1. **Visual Studio Code** installed and open.
 2. **GitHub Copilot** signed in (check the Copilot icon in the bottom-right status bar of VS Code).
-3. **Node.js (v22 or newer)** installed.
+3. **Node.js (v22 or newer)** available on `PATH`. You only need the `node` executable; npm, npx, and package installs are not required.
 
 Let's test Node.js right now:
 1. In VS Code, press `` Ctrl+` `` (the key above Tab) to open the **Terminal**.

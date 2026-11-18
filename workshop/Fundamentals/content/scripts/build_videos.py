@@ -318,7 +318,7 @@ def render_scene_layer(
     # 2. Top-right Live Voice Equalizer HUD + Brand Pill
     hud_x, hud_y, hud_w, hud_h = W - 410, 34, 346, 52
     draw.rounded_rectangle((hud_x, hud_y, hud_x + hud_w, hud_y + hud_h), radius=26, fill=(18, 25, 44, 220), outline=(64, 82, 124, 190), width=2)
-    voice_lbl = "LIVE GUIDE · CORAL" if board["id"] == "participant" else "COACH BRIEF · ALLOY"
+    voice_lbl = "LIVE GUIDE" if board["id"] == "participant" else "COACH BRIEF"
     draw.text((hud_x + 20, hud_y + 14), voice_lbl, font=FONT_HUD, fill=(216, 228, 250, 255))
     # 12 animated equalizer bars
     eq_base_x = hud_x + 208

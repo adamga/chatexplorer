@@ -4,10 +4,10 @@ A local-only, **zero-package** Node.js web application for loading, browsing, se
 
 ## Run
 
-Requires **Node.js 22 or newer** — zero external npm packages required.
+Requires **Node.js 22 or newer**. No npm, npx, or package install is required.
 
 ```powershell
-npm start
+node --max-old-space-size=8192 src/server.js
 ```
 
 Open **http://127.0.0.1:3210** in your browser.
@@ -19,6 +19,6 @@ Open **http://127.0.0.1:3210** in your browser.
 ## Validate
 
 ```powershell
-npm run check
-npm test
+node --check src/server.js
+node --test
 ```

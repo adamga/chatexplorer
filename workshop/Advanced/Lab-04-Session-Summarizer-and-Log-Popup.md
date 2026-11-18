@@ -41,7 +41,7 @@ Orchestrate our agent team (Developer, Security, Tester, and Documentation) to c
 
 3. Quality Gates:
    - Dispatch `Chronicle Security` to audit secret redaction on upstream failure paths and download headers.
-   - Dispatch `Chronicle Tester` to extend `test/summarizer.test.js` covering `.env` gate enforcement, multi-source digest extraction (prompts + reasoning + tools + subagents + portable relative file diffs), multi-chunk map-reduce synthesis, and redacted failure logging, running `npm run check && npm test`.
+   - Dispatch `Chronicle Tester` to extend `test/summarizer.test.js` covering `.env` gate enforcement, multi-source digest extraction (prompts + reasoning + tools + subagents + portable relative file diffs), multi-chunk map-reduce synthesis, and redacted failure logging, running `node --check <file>` for each changed JavaScript file and `node --test`.
    - Dispatch `Chronicle Documentation` to document the new Session Summary workflow in `README.md`.
 ```
 
@@ -51,7 +51,7 @@ Orchestrate our agent team (Developer, Security, Tester, and Documentation) to c
 
 1. Start (or restart) your server in the VS Code Terminal:
    ```powershell
-   npm start
+   node --max-old-space-size=8192 src/server.js
    ```
 2. Open **http://127.0.0.1:3210** in your browser.
 3. Import your sessions (click **Open session** or **Agent sessions** if you haven't imported a folder yet) and select a rich multi-turn coding session from the library.
@@ -71,4 +71,4 @@ Orchestrate our agent team (Developer, Security, Tester, and Documentation) to c
 - [x] Progress dialog updates live, logs problems cleanly, and opens the popup operation log with clipboard copy.
 - [x] `summaries/<session-name>-summary.md` is generated and ready for cross-machine agent handoff!
 
-👉 **Next up: [Lab 05 — Packaging as a Desktop Electron App & Windows Setup Installer](./Lab-05-Desktop-Electron-and-Installer.md)**
+👉 **Next up: [Lab 05 — Package-Free Browser Release & Desktop Architecture Review](./Lab-05-Desktop-Electron-and-Installer.md)**

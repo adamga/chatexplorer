@@ -8,7 +8,7 @@
 ## 🎒 Before You Start (3-Check Backpack!)
 
 1. **VS Code Open** inside `workshop/Fundamentals/sampleapp` *(use **File → Open Folder...** so `sampleapp` is right at the top of Explorer!)*.
-2. **Node.js v22+** ready (`node --version` in Terminal `` Ctrl+` ``).
+2. **Node.js v22+** ready (`node --version` in Terminal `` Ctrl+` ``). No npm, npx, or package installs.
 3. **GitHub Copilot Chat** (`Ctrl+Alt+I`) set to **Agent / Autopilot** mode with a **Frontier Model** (**Claude Sonnet 5.5**, **GPT-6.1**, or **Gemini 4**) at standard/**Medium** speed.
 
 ---
@@ -25,13 +25,13 @@ Most apps download hundreds of outside "mystery boxes" (`npm install`). Today we
 | :--- | :---: | :--- | :--- | :--- |
 | **Step 1** | `7 min` | [`Lab-00-Intro-and-Setup.md`](../Lab-00-Intro-and-Setup.md) | Trust empty `sampleapp` folder & pick your Frontier Model | `node --version` prints `v22+` |
 | **Step 2** | `8 min` | [`Lab-01-Copilot-Instructions-Zero-Packages.md`](../Lab-01-Copilot-Instructions-Zero-Packages.md) | Create Copilot's Magic Rulebook (`.github/copilot-instructions.md`) & `package.json` | `0` dependencies in `package.json` |
-| **Step 3** | `15 min` | [`Lab-02-Session-Parser-and-Diff-Engine.md`](../Lab-02-Session-Parser-and-Diff-Engine.md) | Build Spot-the-Difference (`diff.js`), Dual Chat Reader (`parser.js`) & Search Library | `npm test` prints green `pass`! |
+| **Step 3** | `15 min` | [`Lab-02-Session-Parser-and-Diff-Engine.md`](../Lab-02-Session-Parser-and-Diff-Engine.md) | Build Spot-the-Difference (`diff.js`), Dual Chat Reader (`parser.js`) & Search Library | `node --test` prints green `pass`! |
 | **Step 4** | `10 min` | [`Lab-03-Zero-Package-Web-Server.md`](../Lab-03-Zero-Package-Web-Server.md) | Build private `127.0.0.1:3210` web server with built-in `node:http` | Security & API tests pass |
 | **Step 5** | `20 min` | [`Lab-04-Interactive-Explorer-UI.md`](../Lab-04-Interactive-Explorer-UI.md) | Paint 60+ SVG icons, Markdown, Dark & Bright White Mode, Sort & Search! | App live at `http://127.0.0.1:3210/`! |
 
 ---
 
-## 🏆 Finish-Line Treasure Hunt (`npm start`)
+## 🏆 Finish-Line Treasure Hunt (`node --max-old-space-size=8192 src/server.js`)
 
 Once your app opens at **http://127.0.0.1:3210/**:
 1. Click **Open session** → explore your classic VS Code `workspaceStorage` chats!

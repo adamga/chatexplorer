@@ -4,10 +4,10 @@ A local-only Node.js application for exploring raw VS Code chat history. A promp
 
 ## Run
 
-Requires **Node.js 22 or newer** — **zero runtime npm package dependencies** (runs directly on built-in Node.js modules with no `npm install` needed for the web server or unit tests).
+Requires **Node.js 22 or newer**. No npm, npx, or package install is needed for the web server or unit tests. Run these commands from `appsample/`.
 
 ```powershell
-npm start
+node --max-old-space-size=8192 src/server.js
 ```
 
 Open **http://127.0.0.1:3210**. The app opens on the **Library**, where every session from imported paths is listed and grouped by workspace. The supplied sample in `chatsessions` loads automatically.
@@ -17,7 +17,7 @@ To browse your whole history, open the folder that contains all workspace hash f
 Use **Open session** to enter a local path, or pass one at startup:
 
 ```powershell
-npm start -- --path "C:\Users\you\AppData\Roaming\Code\User\workspaceStorage\workspace-hash"
+node --max-old-space-size=8192 src/server.js --path "C:\Users\you\AppData\Roaming\Code\User\workspaceStorage\workspace-hash"
 ```
 
 Accepted inputs:
@@ -30,11 +30,13 @@ Accepted inputs:
 
 Keep the **whole workspace storage folder** together for the richest history. The SQLite database alone is not the transcript. Imported paths are saved in `.chat-explorer.json` and reloaded on restart. Reimport a path to refresh its contents. The explorer reads a point-in-time view; it does not watch live sessions.
 
-## Windows desktop app
+## Windows desktop app (optional maintainer workflow)
 
-Chronicle also ships as an Electron desktop app with a Windows installer.
+Chronicle also ships as an Electron desktop app with a Windows installer. Running a prebuilt installer does not require npm. Running Electron from source or building the installer uses npm and build-only dependencies; neither is a workshop requirement.
 
 ```powershell
+npm ci            # install optional maintainer tooling from the lockfile
+node build/render-icon.cjs
 npm run desktop   # run the desktop app from source
 npm run dist      # build dist\Chronicle-Setup-<version>.exe (NSIS, x64)
 npm run pack      # unpacked app only, in dist\win-unpacked
@@ -47,13 +49,13 @@ npm run pack      # unpacked app only, in dist\win-unpacked
 - Imported paths are remembered in `%APPDATA%\Chronicle\settings.json`. The bundled sample is not included in the installer. Uninstalling keeps these settings.
 - The renderer is sandboxed with context isolation and no Node access. External links open in your default browser.
 - The installer is unsigned, so Windows SmartScreen may warn on first run. Choose **More info → Run anyway**, or configure code signing in electron-builder.
-- Icons are generated from `build\icon.svg` with `npm run icon`.
+- Generate the PNG and ICO with `node build/render-icon.cjs`; it needs no package install.
 
 To choose another local port:
 
 ```powershell
 $env:PORT=3211
-npm start
+node --max-old-space-size=8192 src/server.js
 ```
 
 ## Explore
@@ -105,14 +107,14 @@ Implementation was checked against the sample and Microsoft's upstream source, r
 Zero runtime npm dependencies: plain browser JavaScript, SVG icons, GFM Markdown + HTML sanitizer + syntax highlighter, a native `node:http` server, a pure-JS Myers line-diff engine, and an isolated session parser. No bundler or build step.
 
 ```powershell
-npm run dev
-npm test
-npm run check
+node --max-old-space-size=8192 --watch src/server.js
+node --test
+node --check src/server.js
 ```
 
 The parser tests cover mutation replay, partial logs, unsafe keys, model changes, tool enrichment, missing snapshots, UTF-16/CRLF edits, baselines, and the supplied real session. Tests create and remove their own temporary fixtures; the original session is not changed.
 
-For browser checks (Playwright starts an isolated server on port 3211 with a temporary data folder):
+Use `node --check <file>` for each changed JavaScript file. For optional maintainer browser checks, first run `npm ci`; Playwright starts an isolated server on port 3211 with a temporary data folder:
 
 ```powershell
 npx playwright test

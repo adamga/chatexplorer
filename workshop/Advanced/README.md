@@ -1,6 +1,6 @@
 # GitHub Copilot Workshop — Advanced (90 Minutes / 1.5 Hours)
 
-**Multi-Agent Orchestration, Custom Agent Skills, Microsoft Foundry LLM Session Analysis & Windows Desktop Installer**
+**Multi-Agent Orchestration, Custom Agent Skills, Microsoft Foundry Session Analysis & Browser Release**
 
 Welcome to the **Advanced Workshop**! You are starting from `workshop/Advanced/sampleapp/`—the complete, working **zero-package Chronicle web explorer** from the Fundamentals track.
 
@@ -9,7 +9,7 @@ Instead of prompting a single default coding assistant directly for every task, 
 Then you will command your **Orchestrator Agent** to build three production-grade enhancements onto Chronicle:
 1. **Microsoft Foundry Agent Configuration & `.env` Connectivity Testing** (connecting to the shared workshop Foundry Agent using Service Principal credentials supplied at lab time, plus `/agentconfig` setup guides).
 2. **Portable LLM Session Handoff Summarization (`<session-name>-summary.md`)** with token-disciplined chunking, a live progress dialog, and a popup operation log viewer with clipboard copy and secret redaction.
-3. **Sandboxed Electron Windows Desktop Application & NSIS Setup Installer (`Chronicle-Setup-1.0.0.exe`)**—packaging **zero `node_modules`** inside `app.asar`!
+3. **Package-free browser release** with a generated Chronicle icon, regression checks, and a read-only review of the optional Electron wrapper.
 
 ---
 
@@ -17,17 +17,17 @@ Then you will command your **Orchestrator Agent** to build three production-grad
 
 | Lab | Topic | Time |
 |---|---|---|
-| **[Lab 00 — Intro, Baseline & Workshop Credentials](./Lab-00-Intro-and-Baseline.md)** | Open `workshop/Advanced/sampleapp`, verify the baseline zero-package app (`npm test`), select a frontier model, and review the shared Foundry Service Principal parameters | **8 min** |
+| **[Lab 00 — Intro, Baseline & Workshop Credentials](./Lab-00-Intro-and-Baseline.md)** | Open `workshop/Advanced/sampleapp`, verify the baseline zero-package app (`node --test`), select a frontier model, and review the shared Foundry Service Principal parameters | **8 min** |
 | **[Lab 01 — Orchestrator & Specialist Role Agents](./Lab-01-Orchestrator-and-Role-Agents.md)** | Create `.github/agents/chronicle-orchestrator.agent.md` plus four role-scoped worker subagents (`Developer`, `Tester`, `Security`, `Documentation`) | **17 min** |
 | **[Lab 02 — Equipping Agents with Custom Skills](./Lab-02-Creating-Agent-Skills.md)** | Author four domain `SKILL.md` modules under `.github/skills/` and attach each skill to its matching specialist agent | **15 min** |
 | **[Lab 03 — Foundry `.env` Config & Connectivity Test](./Lab-03-Foundry-Config-and-Connectivity.md)** | Use **Chronicle Orchestrator** to build `/agentconfig` docs, Entra ID Service Principal OAuth2 + Foundry Responses client, and the `.env` config/test dialog—then test live connectivity | **15 min** |
 | **[Lab 04 — LLM Session Summarizer & Log Popup](./Lab-04-Session-Summarizer-and-Log-Popup.md)** | Use **Chronicle Orchestrator** to add comprehensive, token-bounded `<session-name>-summary.md` generation, progress dialog, and popup operation log viewer with clipboard copy | **18 min** |
-| **[Lab 05 — Desktop Electron App & Setup Installer](./Lab-05-Desktop-Electron-and-Installer.md)** | Use **Chronicle Orchestrator** to add a pure-Node PNG/ICO icon generator, sandboxed Electron utility-process wrapper, `.env` seeding, and `Chronicle-Setup-1.0.0.exe` NSIS installer | **17 min** |
+| **[Lab 05 — Browser Release & Desktop Architecture](./Lab-05-Desktop-Electron-and-Installer.md)** | Generate and serve a local icon, verify the browser app, and review the reference desktop wrapper without running it | **17 min** |
 
 ---
 
 ## Core Architectural Invariant
 
-Read `sampleapp/.github/copilot-instructions.md`: Chronicle uses **zero runtime Node.js / npm package dependencies** (`"dependencies"` is never added to `package.json`). Even in Lab 05 when packaging the Windows Electron installer, `electron` and `electron-builder` exist strictly as build-time `devDependencies`—`app.asar` ships **100% pure application source code and zero `node_modules`**.
+Read `sampleapp/.github/copilot-instructions.md`: use **Node.js 22+ directly**, with no npm, npx, Electron, or package installs. Keep `package.json` free of `dependencies` and `devDependencies`. Foundry credentials are still needed for the live checks in Labs 03–04; the local tests use mocks.
 
 👉 **Start here: [Lab 00 — Intro, Baseline & Workshop Credentials](./Lab-00-Intro-and-Baseline.md)**

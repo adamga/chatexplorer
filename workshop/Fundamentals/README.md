@@ -4,7 +4,7 @@
 
 Welcome! In this 1-hour hands-on workshop, you will start from a completely empty folder (`sampleapp/`) and guide GitHub Copilot step-by-step to build **Chronicle**—a sleek local web app that opens, sorts, searches, and replays your saved VS Code and Copilot chat conversations right in your browser.
 
-No custom agents, no frameworks, and **zero `npm install` packages**—every piece of logic (web server, file parser, diff viewer, Markdown renderer, syntax highlighter, and icons) is written directly into your own source code!
+No custom agents or frameworks. You run the app and tests with **Node.js 22+** directly; npm, npx, and package installs are not required.
 
 ---
 

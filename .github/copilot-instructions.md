@@ -13,4 +13,4 @@
 - Never commit secrets or `.env` files to source control; redact secrets and bearer tokens from logs and error messages.
 
 ## Validation
-- Run `npm run check` and `npm test` after making code changes to verify syntax and unit test coverage without requiring `node_modules`.
+- Use `node --check <file>` for each changed JavaScript file and `node --test` from the app directory. Neither workshop requires npm, npx, or any package install. Electron packaging and Playwright tooling are separate maintainer workflows in `appsample/`.

@@ -49,17 +49,17 @@ Create four workspace custom subagent files inside `.github/agents/` using VS Co
    - Body instructions:
      - Implement backend modules in `src/` using ONLY built-in `node:*` modules and global `fetch`. Never add `"dependencies"` to `package.json` or import npm packages at runtime.
      - Implement frontend features in `public/` using plain HTML/CSS/JS, `chronicleIcons`, and `chronicleMarkdown` (no CDNs, no `/vendor/` paths).
-     - Keep all persisted chat session sources strictly read-only, use atomic temp-file + `rename` writes for `.env` and summary outputs, and run `npm run check` before returning your summary.
+     - Keep all persisted chat session sources strictly read-only, use atomic temp-file + `rename` writes for `.env` and summary outputs, and run `node --check <file>` for each changed JavaScript file before returning your summary.
 
 2. `.github/agents/chronicle-test.agent.md`:
    - `name: Chronicle Tester`
-   - `description: Automated quality & test engineer for Chronicle. Delegate unit/integration test authoring and validation runs (`npm run check` and `npm test`) to this agent.`
+   - `description: Automated quality & test engineer for Chronicle. Delegate unit/integration test authoring and validation runs (per-file syntax checks and `node --test`) to this agent.`
    - `tools: ['read', 'edit', 'search', 'execute']`
    - `user-invocable: false`
    - Body instructions:
      - Write fast, deterministic tests in `test/*.test.js` using ONLY `node:test`, `node:assert/strict`, `node:http` (for local mock OAuth/Foundry servers), and temporary `os.tmpdir()` directories cleaned up via `t.after(...)`.
      - Test edge cases, error paths, secret redaction, and our zero-package invariant (asserting `package.json` has no `"dependencies"`).
-     - Always run `npm run check && npm test` and report exact pass/fail counts and root causes.
+     - Always run `node --check <file>` for each changed JavaScript file and `node --test` and report exact pass/fail counts and root causes.
 
 3. `.github/agents/chronicle-security.agent.md`:
    - `name: Chronicle Security`
@@ -68,7 +68,7 @@ Create four workspace custom subagent files inside `.github/agents/` using VS Co
    - `user-invocable: false`
    - Body instructions:
      - Never edit files. Inspect changed files and report concrete findings grouped by severity (`Critical`, `High`, `Medium`, `Pass`) with exact `file:line` references.
-     - Verify: (a) `.env` and `summaries/` are in `.gitignore` and secrets are never returned by GET config APIs or leaked in operation logs/error banners; (b) Foundry endpoints require `https:` (allowing `http://127.0.0.1` only for local mock tests); (c) server binds to `127.0.0.1` with cross-origin `403` and strict CSP; (d) Electron windows enforce `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`, and deny arbitrary external navigation; (e) zero third-party runtime npm packages were introduced.
+     - Verify: (a) `.env` and `summaries/` are in `.gitignore` and secrets are never returned by GET config APIs or leaked in operation logs/error banners; (b) Foundry endpoints require `https:` (allowing `http://127.0.0.1` only for local mock tests); (c) server binds to `127.0.0.1` with cross-origin `403` and strict CSP; (d) if reviewing the reference desktop wrapper, Electron windows enforce `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`, and deny arbitrary external navigation; (e) zero third-party runtime npm packages were introduced.
 
 4. `.github/agents/chronicle-docs.agent.md`:
    - `name: Chronicle Documentation`
@@ -104,7 +104,7 @@ Create `.github/agents/chronicle-orchestrator.agent.md` for our lead coordinatin
     2. **Implement (`Chronicle Developer`):** Delegate concrete, self-contained file specifications and acceptance criteria to `Chronicle Developer` (always reinforcing the zero-runtime-npm-package architecture).
     3. **Parallel Quality Gates (`Chronicle Security` + `Chronicle Tester` + `Chronicle Documentation`):**
        - Dispatch `Chronicle Security` to audit the changes for secret leaks, CSP/CORS, Electron sandboxing, and zero-package compliance.
-       - Dispatch `Chronicle Tester` to add focused `node:test` coverage and execute `npm run check && npm test`.
+       - Dispatch `Chronicle Tester` to add focused `node:test` coverage and execute `node --check <file>` for each changed JavaScript file and `node --test`.
        - Dispatch `Chronicle Documentation` when user-facing setup docs, `/agentconfig` prompts, or `README.md` updates are required.
     4. **Remediate & Sign Off:** If `Chronicle Security` or `Chronicle Tester` reports any High/Critical issue or failing test, send a targeted fix task back to `Chronicle Developer` and re-verify with `Chronicle Tester` before reporting final completion to the user.
 ```

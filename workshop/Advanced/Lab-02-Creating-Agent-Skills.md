@@ -45,7 +45,7 @@ Create four workspace Agent Skills under `.github/skills/<skill-name>/SKILL.md` 
    - Body guidelines:
      - Spin up ephemeral `http.createServer` listeners on port `0` bound to `'127.0.0.1'` to simulate Entra `/oauth2/v2.0/token` (401 bad secret vs 200 token) and Foundry `/responses` (`CONNECTION_TEST:` -> `READY`, `SESSION_CHUNK_DIGEST`, `FINAL_SESSION_SUMMARY`, and 500/502 upstream errors), overriding `AZURE_AUTHORITY_HOST` to `http://127.0.0.1:<port>`.
      - Verify secret redaction: assert neither `clientSecret` nor `access_token` ever appears in `getPublicConfig()`, job error strings, or operation log entries even when upstream errors echo them.
-     - Always assert `package.json` has no `"dependencies"` block and run `npm run check && npm test`.
+     - Always assert `package.json` has no `"dependencies"` block and run `node --check <file>` for each changed JavaScript file and `node --test`.
 
 3. `.github/skills/local-app-security-audit/SKILL.md`:
    - `name: local-app-security-audit`

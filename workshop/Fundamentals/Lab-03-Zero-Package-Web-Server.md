@@ -50,7 +50,7 @@ Requirements for `src/server.js`:
 
 5. Export `startServer({ port = 3210, dataDir, publicDir, paths = [] } = {})` binding strictly to `'127.0.0.1'` (returning `{ server, port, url, close, library, importPath }` where `close()` closes `library`, calls `server.closeAllConnections?.()`, and awaits `server.close()`), and auto-start when `src/server.js` is executed directly from the CLI (supporting optional `--path <folder>`, `process.env.PORT`, and `process.env.CHRONICLE_DATA_DIR`), logging `Chat Explorer: http://127.0.0.1:<port>`.
 
-6. Update `package.json` `"check"` script to include `src/server.js`, add an HTTP server test in `test/parser.test.js` using isolated `os.tmpdir()` `dataDir` and `publicDir` folders (never write temporary test fixtures into the workspace `public/` directory, avoiding Windows file-watcher `EBUSY` locks!) verifying `/api/sessions` (including `defaultPaths`), `/api/import`, static serving, cross-origin `403` blocking, and export download, and run `npm run check && npm test`.
+6. Add an HTTP server test in `test/parser.test.js` using isolated `os.tmpdir()` `dataDir` and `publicDir` folders (never write temporary test fixtures into the workspace `public/` directory, avoiding Windows file-watcher `EBUSY` locks!) verifying `/api/sessions` (including `defaultPaths`), `/api/import`, static serving, cross-origin `403` blocking, and export download. Run `node --check src/server.js` and `node --test`; leave `package.json` unchanged.
 ```
 
 ---
@@ -60,8 +60,8 @@ Requirements for `src/server.js`:
 In your VS Code Terminal, run:
 
 ```powershell
-npm run check
-npm test
+node --check src/server.js
+node --test
 ```
 
 Confirm both commands succeed with **0 errors**!

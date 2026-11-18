@@ -113,18 +113,18 @@ PARTICIPANT_STORYBOARD = {
             "layout": "zoom_shot",
             "screenshot": "07-file-diff-view.png",
             "headline": "Build the Chat Reader & Spot-the-Difference Engine",
-            "subhead": "src/diff.js + src/parser.js + src/library.js  ·  Verified by npm test!",
+            "subhead": "src/diff.js + src/parser.js + src/library.js  ·  Verified by node --test!",
             "cards": [
                 ("Reads Both Chat Formats", "VS Code workspaceStorage + Copilot Agent events.jsonl"),
                 ("Green + & Red - Diffs", "Myers line-diff engine highlights every code edit"),
-                ("Green Test Checkmarks", "Run npm test to prove every piece works!"),
+                ("Green Test Checkmarks", "Run node --test to prove every piece works!"),
             ],
             "spotlight": (0.68, 0.52),
             "narration": (
                 "In Lab Two, Copilot builds the brain of your app! "
                 "It learns how to read both classic VS Code chats and new Copilot Agent sessions, indexes every word in a speedy background worker, "
                 "and builds a Spot-the-Difference engine so deleted lines glow red and new lines glow green. "
-                "Then you run npm test and watch green checkmarks light up your terminal!"
+                "Then you run node --test and watch green checkmarks light up your terminal!"
             ),
         },
         {
@@ -173,7 +173,7 @@ PARTICIPANT_STORYBOARD = {
             "accent": "green",
             "layout": "finale",
             "screenshot": "08-global-search.png",
-            "headline": "Run npm start & Explore http://127.0.0.1:3210/",
+            "headline": "Launch Chronicle in your browser",
             "subhead": "Open Lab-00-Intro-and-Setup.md and start your 60-minute adventure!",
             "cards": [
                 ("Find Today's Chat Live!", "Open Agent sessions and see your own workshop chat"),
@@ -182,7 +182,7 @@ PARTICIPANT_STORYBOARD = {
             ],
             "spotlight": (0.66, 0.44),
             "narration": (
-                "At the finish line, you will type npm start, click http://127.0.0.1:3210, "
+                "At the finish line, use the Node start command in Lab Four, open the local address it prints, "
                 "and even find the very workshop conversation you are having right now! "
                 "Open Lab Zero in VS Code, trust your empty sampleapp folder, and let's build Chronicle together!"
             ),
@@ -277,7 +277,7 @@ INSTRUCTOR_STORYBOARD = {
                 "2. copilot-instructions.md = 'Magic Rulebook'",
                 "3. Expand 'Used 1 reference' in Chat UI!",
                 "4. Peek inside package.json (0 dependencies)",
-                "5. Always prove it with green npm test runs!",
+                "5. Always prove it with green node --test runs!",
             ],
             "cards": [
                 ("Spotlight Chat References", "Show learners VS Code injecting their rulebook live"),
@@ -287,7 +287,7 @@ INSTRUCTOR_STORYBOARD = {
             "narration": (
                 "While Copilot spends two to four minutes generating code in Labs Two through Four, fill the air with visual stories rather than syntax lectures! "
                 "Right after Lab One, have every student click the References toggle at the top of Copilot's reply so they actually see dot-github slash copilot-instructions-dot-md attached automatically. "
-                "Model the core engineering loop on every lab: Prompt clearly, Peek at the generated files, and run npm test to verify!"
+                "Model the core engineering loop on every lab: Prompt clearly, Peek at the generated files, and run node --test to verify!"
             ),
         },
         {
@@ -301,7 +301,7 @@ INSTRUCTOR_STORYBOARD = {
             "cards": [
                 ("Snag 1: Copilot Runs npm install", "Student opened parent repo! Re-open sampleapp directly as root & delete node_modules."),
                 ("Snag 2: Turn Appears Frozen", "Look in Chat for a waiting Allow / Continue / Keep button; switch Permissions to Assisted."),
-                ("Snag 3: Failing Test Assertion", "Use the 1-line Rescue Prompt in Lab 02 to let Copilot self-heal from npm test output!"),
+                ("Snag 3: Failing Test Assertion", "Use the 1-line Rescue Prompt in Lab 02 to let Copilot self-heal from node --test output!"),
             ],
             "spotlight": (0.72, 0.45),
             "narration": (
@@ -321,7 +321,7 @@ INSTRUCTOR_STORYBOARD = {
             "cards": [
                 ("Windows EBUSY Temp Locks", "Keep server static-file tests in os.tmpdir(), never inside watched workspace public/"),
                 ("Port 3210 Already in Use", "Stop previous terminal with Ctrl+C or launch with PORT=3211"),
-                ("Skip Browser MCP Mid-Build", "Validate Steps 1 & 2 with node --check & npm test; launch browser in Step 3!"),
+                ("Skip Browser MCP Mid-Build", "Validate Steps 1 & 2 with node --check & node --test; launch browser in Step 3!"),
             ],
             "spotlight": (0.68, 0.50),
             "narration": (
@@ -363,7 +363,7 @@ INSTRUCTOR_STORYBOARD = {
             "cards": [
                 ("Inspect Today's Chat!", "Have everyone open Agent sessions to see the lab chat they just ran"),
                 ("Ask 'What If No Rulebook?'", "Reinforce why .github/copilot-instructions.md prevented Express/marked"),
-                ("Bridge to Session 2", "Next up: 5-Agent Team + Custom Skills + Foundry AI Summaries + Electron!"),
+                ("Bridge to Session 2", "Next up: 5-Agent Team + Custom Skills + Foundry AI Summaries + a browser release!"),
             ],
             "spotlight": (0.66, 0.44),
             "narration": (

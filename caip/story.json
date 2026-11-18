@@ -1,0 +1,90 @@
+{
+  "deck": "C:\\repos\\chatexplorer\\caip\\AI-Powered-Workshop-Studio.pptx",
+  "talk_seconds": 720,
+  "slides": [
+    {
+      "section": "THE BIG IDEA",
+      "title": "Less prep.\nMore possibility.",
+      "seconds": 45,
+      "notes": "Open with: What if the next customer scenario started with a reusable studio, not a blank page? This is about augmenting CSA expertise, not replacing it. Frame the ambition without promising measured time savings.",
+      "narration": "What if the next customer workshop started with a reusable studio, instead of a blank page? We use AI to help create the learning experience around a customer scenario: hands-on labs, an editable delivery deck, and explainer videos. The goal is simple. Less repetitive preparation, more time for customer understanding and great facilitation. The architect still owns the outcome."
+    },
+    {
+      "section": "WHY CHANGE",
+      "title": "The frontier moves fast.\nOur prep model should too.",
+      "seconds": 55,
+      "notes": "Ask for a show of hands: Who has updated a workshop, only to find the technology changed again? Contrast disconnected artifacts with one coherent package. No numeric productivity claims.",
+      "narration": "In a fast-moving AI space, a workshop is never really finished. Features evolve, audiences differ, and customer constraints change. Rebuilding each artifact independently creates drift. A lab says one thing, a slide says another, and the instructor has to bridge the gap. Our approach turns that treadmill into a learning loop: create a coherent package, validate it, deliver it, and feed the lessons into the next version."
+    },
+    {
+      "section": "THE APPROACH",
+      "title": "One scenario.\nA whole learning experience.",
+      "seconds": 60,
+      "notes": "Walk left to right. Explain frontier capabilities in plain English: reasoning plans the learning journey; coding creates exercises; multimodal generation helps produce visual and narrated explanations; agents coordinate bounded work. Availability varies by tooling.",
+      "narration": "Start with the scenario, the audience, and an observable outcome. AI reasoning helps shape the learning journey. Code generation helps turn ideas into runnable exercises. Visual composition and speech tools help explain the same concepts in different ways. Bounded agents coordinate the work, while reusable skills make the process consistent. These are complementary capabilities, not a magic one-click workshop. Tool availability and human review still matter."
+    },
+    {
+      "section": "01 / HANDS-ON LABS",
+      "title": "Don't just explain it.\nLet them build it.",
+      "seconds": 65,
+      "notes": "Describe the lab pattern: goal, steps, checkpoint, recap. Emphasize runnable commands, expected results, starter/solution separation and rescue stages. A scenario brief is not sufficient evidence that a lab works.",
+      "narration": "For hands-on labs, AI helps translate learning goals into a sequence of small, achievable tasks. Each task needs clear steps, an observable checkpoint, and a short recap of why it matters. We can generate starter material, solution paths, troubleshooting guidance, and catch-up points. Then we run the exercises. The standard is not that the instructions sound convincing. It is that a learner can follow them and reach the intended outcome."
+    },
+    {
+      "section": "02 / DELIVERY DECK",
+      "title": "From slide surgery\nto story design.",
+      "seconds": 55,
+      "notes": "Distinguish net-new authoring from modification. AI can restructure a story and tailor depth, examples and demo cues. Native editable text/shapes let the next CSA adapt it without starting over.",
+      "narration": "For the delivery deck, AI helps us move from slide surgery to story design. We can create a new narrative, or reshape an existing workshop for a different customer. That includes adjusting depth, replacing examples, tightening the flow, and adding presenter cues. The deck stays editable. The important part is alignment: the presentation introduces what the labs actually teach, with the same terminology, sequence, and outcomes."
+    },
+    {
+      "section": "03 / EXPLAINER VIDEOS",
+      "title": "Teach once.\nMake it replayable.",
+      "seconds": 60,
+      "notes": "Students need preparation, workflow and checkpoints. Future instructors need pacing, demo cues, pitfalls and rescue points. Explain captions/transcripts as first-class leave-behinds. This explainer describes the process, not the existing sample app.",
+      "narration": "Explainer videos extend the workshop beyond the live session. Students can preview a concept, replay a tricky step, or return to a checkpoint later. Future instructors need a different explanation: pacing, demo cues, common pitfalls, and where to cut or rescue an exercise. AI helps draft and narrate those audience-specific stories. Captions and transcripts make the material easier to navigate. When the source changes, the affected media needs to change with it."
+    },
+    {
+      "section": "04 / AGENTS + SKILLS",
+      "title": "Not a mega-prompt.\nA workshop production system.",
+      "seconds": 90,
+      "notes": "The repo contains builder, researcher, producer and reviewer agents, with resources/design/labs/media/verify skills. These are coding-assistant customizations, not deployed Foundry agents. Roles describe bounded responsibilities; available orchestration and authoring capability vary. Any scenario is a starting point, not a promise that every domain is already validated.",
+      "narration": "We formalized the approach as a suite of agents and skills. The builder owns the end-to-end package. A researcher gathers evidence. A producer creates bounded deliverables. A reviewer challenges the result. Skills capture the reusable playbooks for resources, design, labs, media, and verification. Agents answer who owns the work. Skills answer how good work gets done. A new scenario changes the brief and examples, while the production discipline stays reusable. A new domain still needs subject-matter review."
+    },
+    {
+      "section": "THE QUALITY GATE",
+      "title": "Fast drafts.\nDeliberate trust.",
+      "seconds": 60,
+      "notes": "AI output is a draft until checked. Run code and checkpoints, review deck rendering, reconcile narration with slides and verify privacy. Distinguish machine checks from an instructor actually rehearsing the customer journey.",
+      "narration": "Speed only helps if the workshop is trustworthy. We check technical claims, execute the labs, inspect the rendered slides, and reconcile narration with the final visuals. We protect customer information and use approved tools. Automated checks catch some problems, but they do not replace an instructor rehearsal or subject-matter review. Human approval is the release gate. The loop is generate, verify, rehearse, and improve, not generate and hope."
+    },
+    {
+      "section": "FOR THE CSU",
+      "title": "Less reinvention.\nMore customer time.",
+      "seconds": 55,
+      "notes": "Expand CSU as Customer Success Unit and CSA as Cloud Solution Architect if the audience needs it. Present benefits as expected value, not measured outcomes. Reuse means sharing the source, not just a final PDF.",
+      "narration": "For the Customer Success Unit, this creates three opportunities. First, faster workshop creation because we are not starting every artifact from scratch. Second, easier reuse and sharing across Cloud Solution Architects, because the package includes editable sources, guidance, and a repeatable structure. Third, less repetitive work when tailoring an existing workshop or creating a new one. Measure the value through preparation effort, learner progress, and reuse across teams."
+    },
+    {
+      "section": "FOR CUSTOMERS",
+      "title": "Easy to follow.\nWorth coming back to.",
+      "seconds": 55,
+      "notes": "Connect structure to experience: explain, try, check, recap. Leave-behinds include deck, labs, video and transcript. Repeatability means a customer can revisit the experience, not a guaranteed business result.",
+      "narration": "For customers, a connected learning experience is easier to follow. The story, the exercise, and the checkpoint reinforce one another. Clear structure reduces the effort of figuring out what to do next. Useful leave-behinds include the editable deck, labs, explainers, and transcripts, so teams can revisit the material after the event. Customization starts with their goals, skill level, and constraints, rather than asking them to fit a generic demonstration."
+    },
+    {
+      "section": "THE REUSE LOOP",
+      "title": "Same studio.\nDifferent customer story.",
+      "seconds": 75,
+      "notes": "Use a hypothetical example, not a claim about workshops already delivered. Change a generic AI scenario to knowledge discovery or operations. Keep verified structure, adapt content, re-run affected validation and media. Avoid assuming a reusable lab works unchanged.",
+      "narration": "Imagine adapting the same approach for a knowledge-discovery session, an operations scenario, or a customer-specific AI prototype. We change the audience, examples, environment, and success criteria. We keep the useful structure: objectives, runnable labs, checkpoints, presenter guidance, and review gates. Then we revalidate what changed and regenerate the affected media. Reuse is not copy and forget. It is a controlled starting point that gets better with delivery feedback."
+    },
+    {
+      "section": "THE TAKEAWAY",
+      "title": "Scale the craft.\nNot the busywork.",
+      "seconds": 45,
+      "notes": "Close with one practical action: choose a customer scenario, define a learner outcome, and build one verified reusable package. Measure preparation effort, learner checkpoints and reuse feedback. Leave 2-3 minutes for discussion within a 15-minute slot.",
+      "narration": "The point is not to produce more content for its own sake. It is to scale the craft of a great workshop. Start with one customer scenario and one clear learning outcome. Build a connected package, keep the sources reusable, and release it only after review. Then measure preparation effort, learner progress, and what the next instructor can reuse. Let AI handle more of the busywork, so we can focus on the customer."
+    }
+  ]
+}

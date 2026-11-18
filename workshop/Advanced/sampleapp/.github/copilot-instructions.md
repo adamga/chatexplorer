@@ -13,4 +13,4 @@
 - Never commit secrets or `.env` files to source control; redact secrets and bearer tokens from logs and error messages.
 
 ## Validation
-- Run `npm run check` and `npm test` after making code changes to verify syntax and unit test coverage without requiring `node_modules`.
+- Use `node --check <file>` for each changed JavaScript file and `node --test` from this folder. Do not invoke npm or npx, or add `dependencies` or `devDependencies` during the workshop.

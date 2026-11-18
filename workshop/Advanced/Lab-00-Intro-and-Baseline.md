@@ -22,9 +22,9 @@ Inside `workshop/Advanced/sampleapp/`, you already have the completed **Fundamen
    - `/agentconfig` portal documentation & system prompt (enforcing our zero-package rule).
    - `.env`-backed Service Principal + Foundry Agent configuration dialog with live **Test connection**.
    - **Create session summary** button beside **Read full session** that generates a portable, token-efficient `<session-name>-summary.md` handoff file, displays a live progress dialog, and links to a **Popup Operation Log Window** with clipboard copy.
-3. **Windows Desktop Electron Application & NSIS Setup Program:**
-   - Pure-Node PNG + multi-size `.ico` icon renderer (`node:zlib`, zero external libraries).
-   - Sandboxed Electron shell running the server in an isolated `utilityProcess` with native folder/file pickers, automatic `.env` seeding, and `Chronicle-Setup-1.0.0.exe` Windows installer.
+3. **Package-Free Browser Release & Desktop Architecture Review:**
+   - Generate a browser icon with a pure-Node PNG/ICO renderer, then verify the app and summarizer in the browser.
+   - Review how the optional Electron wrapper isolates the backend and keeps secrets out of the installer, without building or running it.
 
 ---
 
@@ -36,13 +36,13 @@ Inside `workshop/Advanced/sampleapp/`, you already have the completed **Fundamen
    ```text
    workshop/Advanced/sampleapp
    ```
-2. Open the integrated Terminal (`` Ctrl+` ``) and verify the baseline application passes syntax checks and unit tests with zero `node_modules`:
+2. Open the integrated Terminal (`` Ctrl+` ``) and verify Node.js **22 or newer** and the starter baseline. npm, npx, Electron and any package install are not required:
    ```powershell
    node --version
-   npm run check
-   npm test
+   node --check src/server.js
+   node --test
    ```
-   You should see all baseline tests pass in under a second!
+   Expect no syntax errors and zero test failures.
 
 ---
 
@@ -75,7 +75,7 @@ Keep these 5 values from your instructor handy—you will enter them into Chroni
 ## ✅ Lab 00 Checkpoint
 
 - [x] VS Code is open directly at `workshop/Advanced/sampleapp`.
-- [x] `npm run check` and `npm test` pass with zero errors.
+- [x] `node --check src/server.js` and `node --test` pass with zero errors.
 - [x] You have your instructor's Foundry Agent & Service Principal details ready for Lab 03.
 
 👉 **Next up: [Lab 01 — Creating the Orchestrator & Specialist Role Agents](./Lab-01-Orchestrator-and-Role-Agents.md)**

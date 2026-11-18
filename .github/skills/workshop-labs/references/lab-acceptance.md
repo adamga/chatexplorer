@@ -14,8 +14,7 @@ For every lab, establish:
 - Human reviewer/CI backstop, explicit limitations of guard hooks and instructions.
 - Honest evidence: unit/API tests, browser checks, simulated merges, actual live agent execution kept distinct.
 
-Current commands (verify manifests instead of hard-coding counts):
-- `sampleapp`: npm test; npm start; /#conversation; /?seed=4 and /?seed=big.
-- `workshop/lab-starter`: npm test. Setup-generated practice repo: npm run test:contract (red before engine).
-- `workshop/lab-kit`: node --test "test/*.test.js"; setup-lab.ps1/sh, catch-up.ps1 -Stage engine|seams|finished.
-- Practice repo: tools/overlap-check.mjs <integration-base> <lane-branches...>.
+Current Chronicle commands (from the app's workspace folder):
+- `appsample` and `workshop/Advanced/sampleapp`: `node --test` and `node --max-old-space-size=8192 src/server.js`.
+- `workshop/Fundamentals/sampleapp` starts empty; Labs 02–04 introduce the tests, server, and UI in that order.
+- Run `node --check <file>` for each changed JavaScript file. Do not require npm, npx, or package installs for workshop exercises.

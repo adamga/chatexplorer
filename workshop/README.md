@@ -1,6 +1,6 @@
 # Chronicle Hands-On Workshop Series
 
-Welcome to the **Chronicle / Chat Explorer** hands-on GitHub Copilot workshop curriculum! Across two progressive sessions, participants build a zero-package, read-only local observatory for VS Code and GitHub Copilot chat history—first using prompt-driven Copilot Agent Mode from an empty folder, and then scaling up to a multi-agent engineering team with custom skills, Microsoft Foundry LLM session summarization, and a packaged Windows Electron desktop installer.
+Across two sessions, participants build a zero-package, read-only local explorer for VS Code and GitHub Copilot chat history, then extend it with custom agents, skills, and Microsoft Foundry session summarization. Both tracks run directly on **Node.js 22+** with no npm, npx, or package installs. The Windows desktop installer is an optional reference-app build, not a workshop requirement.
 
 ---
 
@@ -9,6 +9,6 @@ Welcome to the **Chronicle / Chat Explorer** hands-on GitHub Copilot workshop cu
 | Track | Duration | Starting Folder | What Participants Build |
 |---|---|---|---|
 | **[1. Fundamentals](./Fundamentals/README.md)** | **60 minutes** (1.0 hr) | `workshop/Fundamentals/sampleapp/` *(empty)* | Using only VS Code, GitHub Copilot, `.github/copilot-instructions.md`, and a frontier model (Claude Sonnet 5.5, GPT, or Gemini), build the complete **zero-package Node.js web application** to load, sort, search, and inspect VS Code (`workspaceStorage`) and Copilot Agent (`.copilot\session-state`) chat sessions. *(No custom agents/skills, no Electron, no LLM summarizer.)* |
-| **[2. Advanced](./Advanced/README.md)** | **90 minutes** (1.5 hrs) | `workshop/Advanced/sampleapp/` *(completed Fundamentals web app)* | Design an **Orchestrator Agent**, a team of **role-based subagents** (Developer, Tester, Security, Documentation), and **reusable Agent Skills (`SKILL.md`)**, then dispatch work across the team to add **Microsoft Foundry LLM Session Handoff Summarization** (`<session-name>-summary.md`), an **Electron Desktop App**, and a **Windows NSIS Setup Installer**. |
+| **[2. Advanced](./Advanced/README.md)** | **90 minutes** (1.5 hrs) | `workshop/Advanced/sampleapp/` *(completed Fundamentals web app)* | Design an **Orchestrator Agent**, **role-based subagents** and **reusable Agent Skills**, then add **Microsoft Foundry session handoff summarization** and verify a browser release. |
 
-> **Instructor Reference:** The complete, finished end-state application after both workshops lives at [`../../appsample/`](../appsample/README.md).
+> **Instructor Reference:** The [reference app](../appsample/README.md) includes the workshop features and an optional desktop wrapper.

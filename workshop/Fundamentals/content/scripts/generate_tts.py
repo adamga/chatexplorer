@@ -260,7 +260,7 @@ def split_caption_chunks(text: str, start_sec: float, end_sec: float, max_words:
     return chunks
 
 
-def write_subtitles_and_transcript(board: dict, scene_manifests: list[dict], total_duration: float):
+def write_subtitles_and_transcript(board: dict, scene_manifests: list[dict], total_duration: float, narration_source: str):
     all_cues = []
     for sm in scene_manifests:
         all_cues.extend(sm["captions"])
@@ -289,7 +289,7 @@ def write_subtitles_and_transcript(board: dict, scene_manifests: list[dict], tot
         "",
         f"- **Video File:** `{board['output_mp4']}`",
         f"- **Subtitles:** `{board['output_srt']}` / `{board['output_vtt']}`",
-        f"- **TTS Model & Voice:** Microsoft Foundry `gpt-audio-1.5` (`{board['voice']}`)",
+        f"- **TTS Model & Voice:** {narration_source}",
         f"- **Total Duration:** `{mins}m {secs:04.1f}s` (`{total_duration:.2f}s`)",
         "",
         "---",
@@ -304,9 +304,24 @@ def write_subtitles_and_transcript(board: dict, scene_manifests: list[dict], tot
     (CONTENT_DIR / board["output_transcript"]).write_text("\n".join(md), encoding="utf-8")
 
 
-def build_variant_tts(variant: str, endpoint: str, model: str, token: str):
+def synthesize_windows_wav(voice: str, narration: str, wav_path: Path):
+    env = dict(os.environ, CHRONICLE_TTS_TEXT=narration, CHRONICLE_TTS_VOICE=voice,
+               CHRONICLE_TTS_WAV=str(wav_path))
+    subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", """
+        $ErrorActionPreference = 'Stop'
+        Add-Type -AssemblyName System.Speech
+        $speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
+        try {
+            $speaker.SelectVoice($env:CHRONICLE_TTS_VOICE)
+            $speaker.SetOutputToWaveFile($env:CHRONICLE_TTS_WAV)
+            $speaker.Speak($env:CHRONICLE_TTS_TEXT)
+        } finally { $speaker.Dispose() }
+    """], env=env, check=True)
+
+
+def build_variant_tts(variant: str, endpoint: str, model: str, token: str, *, local: bool = False):
     board = ALL_STORYBOARDS[variant]
-    voice = board["voice"]
+    voice = {"participant": "Microsoft Zira Desktop", "instructor": "Microsoft David Desktop"}[variant] if local else board["voice"]
     CACHE_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
     http_sess = requests.Session()
@@ -323,7 +338,11 @@ def build_variant_tts(variant: str, endpoint: str, model: str, token: str):
 
         if not wav_path.exists() or wav_path.stat().st_size < 1024:
             t0 = time.time()
-            transcript = synthesize_segment_wav(http_sess, endpoint, token, model, voice, narration, wav_path)
+            if local:
+                synthesize_windows_wav(voice, narration, wav_path)
+                transcript = narration
+            else:
+                transcript = synthesize_segment_wav(http_sess, endpoint, token, model, voice, narration, wav_path)
             elapsed = time.time() - t0
             print(f"  [{variant} {idx}/{len(board['scenes'])}] {scene['id']} synthesized in {elapsed:.1f}s -> {wav_path.name}")
         else:
@@ -366,11 +385,23 @@ def build_variant_tts(variant: str, endpoint: str, model: str, token: str):
     }
     manifest_path = CONTENT_DIR / ".cache" / f"manifest-{variant}.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    write_subtitles_and_transcript(board, scene_manifests, total_duration)
+    source = f"Windows Speech (`{voice}`)" if local else f"Microsoft Foundry `{model}` (`{voice}`)"
+    write_subtitles_and_transcript(board, scene_manifests, total_duration, source)
     print(f"Saved {manifest_path.name} + SRT/VTT/Transcript (total duration = {total_duration:.2f}s)")
 
 
 def main():
+    args = sys.argv[1:]
+    local = "--windows-voice" in args
+    targets = [arg for arg in args if arg != "--windows-voice"] or ["participant", "instructor"]
+    for variant in targets:
+        if variant not in ALL_STORYBOARDS:
+            raise ValueError(f"Unknown storyboard variant: {variant}")
+    if local:
+        for variant in targets:
+            build_variant_tts(variant, "", "windows-speech", "", local=True)
+        return
+
     endpoint = os.environ.get(
         "FOUNDRY_AUDIO_ENDPOINT",
         "https://adamga-8000-resource.services.ai.azure.com/openai/v1/chat/completions",
@@ -380,7 +411,6 @@ def main():
     client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
     client_secret = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
 
-    targets = sys.argv[1:] or ["participant", "instructor"]
     # Only acquire Entra token if at least one scene is not yet cached
     needs_network = False
     for variant in targets:
@@ -403,8 +433,6 @@ def main():
         token = acquire_entra_token(tenant_id, client_id, client_secret)
 
     for variant in targets:
-        if variant not in ALL_STORYBOARDS:
-            raise ValueError(f"Unknown storyboard variant: {variant}")
         build_variant_tts(variant, endpoint, model, token)
 
 

@@ -138,7 +138,7 @@ async function buildDemoFixtures(rootDir) {
           {
             toolCallId: 'tc-test-2',
             name: 'powershell',
-            arguments: { command: 'npm run check && npm test' },
+            arguments: { command: 'node --check src/server.js && node --test' },
           },
         ],
       },
@@ -164,7 +164,7 @@ async function buildDemoFixtures(rootDir) {
     {
       type: 'tool.execution_start',
       timestamp: '2026-11-18T10:01:16Z',
-      data: { toolCallId: 'tc-test-2', toolName: 'powershell', arguments: { command: 'npm run check && npm test' } },
+      data: { toolCallId: 'tc-test-2', toolName: 'powershell', arguments: { command: 'node --check src/server.js && node --test' } },
     },
     {
       type: 'tool.execution_complete',
