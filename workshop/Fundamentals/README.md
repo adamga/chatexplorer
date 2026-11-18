@@ -8,6 +8,15 @@ No custom agents, no frameworks, and **zero `npm install` packages**—every pie
 
 ---
 
+## Presentation Decks & Explainer Videos (`content/`)
+
+- **Workshop Slide Deck (Editable PPTX):** [`content/Fundamentals-Workshop-Deck.pptx`](./content/Fundamentals-Workshop-Deck.pptx) *(18 kid-friendly visual slides)*
+- **Participant Explainer Video (1080p MP4):** [`content/Participant-Explainer.mp4`](./content/Participant-Explainer.mp4) *(lab goals, techniques, 5-step walkthrough & live app preview)*
+- **Instructor Explainer Video & Deck:** [`content/Instructor-Explainer.mp4`](./content/Instructor-Explainer.mp4) · [`content/Instructor-Delivery-Guide.pptx`](./content/Instructor-Delivery-Guide.pptx) · [`content/Instructor-Delivery-Guide.md`](./content/Instructor-Delivery-Guide.md)
+- **Full Media Kit & Transcripts:** [`content/README.md`](./content/README.md)
+
+---
+
 ## Schedule & Lab Map (60 Minutes Total)
 
 | Lab | Topic | Time |

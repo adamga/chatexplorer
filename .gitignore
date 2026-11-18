@@ -11,5 +11,8 @@
 **/.env.*
 !**/.env.example
 **/summaries/
+resourceinfo.txt
+**/content/.cache/
+
 
 

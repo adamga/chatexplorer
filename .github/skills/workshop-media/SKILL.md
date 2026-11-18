@@ -1,0 +1,15 @@
+---
+name: workshop-media
+description: "Build and revamp editable workshop PowerPoint decks and lesson, student and instructor explainer videos with matching narration, captions and transcripts. Use for template styling, PowerPoint-safe rendering, TTS, MP4 assembly and media synchronization."
+---
+# Decks and three explainers
+
+1. Load workshop-resources for the approved template and available rendering/narration services. Never read credentials directly or send code/private content to an unapproved provider. Prefer the existing local builders; credentials cannot make an unsupported tool or API callable.
+2. Analyze the supplied deck's actual dimensions, masters, layouts, theme, fonts and reusable assets. Do not infer style from its filename. Reuse the authorized visual styling, product background, hierarchy and footer; avoid copying obsolete slide content. Where exact fonts are absent, report fallback rendering honestly.
+3. Author a single continuous presentation first, then labs in sequence with recap slides after each. Separate instructor coaching/demos/rescue points and student setup/steps/checkpoints. Create distinct main/lesson, student and instructor decks, narration and guides with consistent objectives and timing.
+4. Keep decks editable: native text, tables and shapes, not screenshots of every slide. Existing `workshop/deck/lib.py` provides title/section/content/card/table/code/lab/recap helpers and a Deck class that writes both PPTX and variant narration. Extend those sources rather than manually changing generated files and losing synchronization.
+5. Follow [build/runbook](./references/media-runbook.md). Protect open PowerPoint sessions: no process-name kills, no unconditional Application.Quit(). Render with the helper that closes only the presentation it opened and quits only an application it started. Locked deck targets get a versioned adjacent file, with downstream build selecting the correct newest deck.
+6. Build narration appropriate for each audience: lesson explains all concepts accessibly; student explains preparation/workflow/checkpoints; instructor covers facilitation, demo cues, pitfalls, cuts and recap answers. Avoid unverified test counts and fabricated durations. Use actual generated duration afterward.
+7. Use authorized TTS or local alternatives, narration caching invalidated by source changes, matching exported slides, a 1080p MP4 with audio and captions, SRT/VTT and readable transcripts. Validate the slide/narration counts. Scripts or narration JSON alone do not satisfy a video request.
+8. Visually inspect all changed/new slide layouts and sampled encoded frames. Check clipping, overlap, literal Markdown markers, contrast, code size, ordering and pacing. Inspect video/audio/subtitle streams, duration, timing and secret-free transcript text. If a correction changes narration or styling, rebuild every affected output before reporting completion.
+9. Deliver final paths, playback instructions and build tooling. If rendering/TTS/access is unavailable, explain the precise dependency and preserve complete reproducible inputs; don't silently substitute an outline for the requested binary.
