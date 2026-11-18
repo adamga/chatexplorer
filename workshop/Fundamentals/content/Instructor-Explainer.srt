@@ -1,0 +1,219 @@
+1
+00:00:00,350 --> 00:00:02,017
+Welcome, instructors!
+
+2
+00:00:02,017 --> 00:00:07,970
+In the Chronicle Fundamentals lab, you will guide participants—from curious
+
+3
+00:00:07,970 --> 00:00:13,448
+kids to first-time Copilot builders—from a completely empty folder to
+
+4
+00:00:13,448 --> 00:00:18,131
+a tested, zero-dependency Node.js web app in sixty minutes.
+
+5
+00:00:18,131 --> 00:00:22,973
+Because learners finish by opening their own real VS Code and
+
+6
+00:00:22,973 --> 00:00:29,958
+Copilot Agent sessions at http://127.0.0.1:3210, the payoff feels magical—and our strict
+
+7
+00:00:29,958 --> 00:00:36,150
+zero-package design eliminates classroom npm and firewall failures completely.
+
+8
+00:00:37,050 --> 00:00:41,292
+Ten minutes before doors open, lock in four pre-flight checks.
+
+9
+00:00:41,292 --> 00:00:45,398
+First, keep a finished Chronicle server running on port 3210
+
+10
+00:00:45,398 --> 00:00:48,819
+so you can demo the finish line in ninety seconds.
+
+11
+00:00:48,819 --> 00:00:54,088
+Second, verify Node twenty-two or newer and make sure everyone opens workshop
+
+12
+00:00:54,088 --> 00:00:59,083
+slash Fundamentals slash sampleapp directly as their VS Code root folder.
+
+13
+00:00:59,083 --> 00:01:03,462
+Third, have students pick a frontier model at standard or Medium
+
+14
+00:01:03,462 --> 00:01:09,073
+reasoning effort—High reasoning can stretch a three-minute build past ten minutes!
+
+15
+00:01:09,073 --> 00:01:15,300
+And fourth, suggest Assisted or Allow all permissions inside their isolated starter folder.
+
+16
+00:01:16,200 --> 00:01:21,888
+Keep a brisk, celebratory rhythm across five timed checkpoints: seven minutes for
+
+17
+00:01:21,888 --> 00:01:26,874
+Lab Zero setup, eight minutes for the Lab One rulebook, fifteen minutes
+
+18
+00:01:26,874 --> 00:01:31,930
+for Lab Two's dual-format parser, Myers diff engine, and unit tests, ten
+
+19
+00:01:31,930 --> 00:01:36,987
+minutes for Lab Three's loopback http server, and twenty minutes for Lab
+
+20
+00:01:36,987 --> 00:01:41,200
+Four's browser interface and five-minute live treasure hunt.
+
+21
+00:01:42,100 --> 00:01:46,811
+While Copilot spends two to four minutes generating code in Labs Two
+
+22
+00:01:46,811 --> 00:01:52,007
+through Four, fill the air with visual stories rather than syntax lectures!
+
+23
+00:01:52,007 --> 00:01:57,134
+Right after Lab One, have every student click the References toggle at the
+
+24
+00:01:57,134 --> 00:02:04,894
+top of Copilot's reply so they actually see dot-github slash copilot-instructions-dot-md attached automatically.
+
+25
+00:02:04,894 --> 00:02:09,467
+Model the core engineering loop on every lab: Prompt clearly, Peek
+
+26
+00:02:09,467 --> 00:02:13,000
+at the generated files, and run npm test to verify!
+
+27
+00:02:13,900 --> 00:02:16,513
+Here are your fastest classroom rescues.
+
+28
+00:02:16,513 --> 00:02:20,954
+First, if Copilot ignores the zero-package rule and tries to run npm
+
+29
+00:02:20,954 --> 00:02:25,983
+install, glance at the student's Explorer sidebar—nine times out of ten, they
+
+30
+00:02:25,983 --> 00:02:31,012
+opened the parent repository instead of opening sampleapp as the root folder!
+
+31
+00:02:31,012 --> 00:02:33,429
+Have them re-open sampleapp directly.
+
+32
+00:02:33,429 --> 00:02:37,805
+Second, if a turn seems stuck with a spinning indicator, scroll the
+
+33
+00:02:37,805 --> 00:02:42,050
+Chat pane to click any waiting Allow or Keep confirmation button.
+
+34
+00:02:42,950 --> 00:02:46,860
+On developer laptops, watch for two subtle platform quirks
+
+35
+00:02:46,860 --> 00:02:49,961
+we already guarded against in the lab prompts.
+
+36
+00:02:49,961 --> 00:02:55,556
+On Windows, server tests should write temporary static fixtures to os.tmpdir rather
+
+37
+00:02:55,556 --> 00:03:01,286
+than inside the workspace public folder, preventing VS Code file-watcher EBUSY locks.
+
+38
+00:03:01,286 --> 00:03:05,668
+And if an advanced attendee has Chrome DevTools or Playwright MCP
+
+39
+00:03:05,668 --> 00:03:10,792
+servers installed globally, remind them to validate Lab Four generation with
+
+40
+00:03:10,792 --> 00:03:16,050
+node dash-dash-check first rather than spinning up browser MCP tools mid-turn!
+
+41
+00:03:16,950 --> 00:03:21,269
+If a participant joins late or hits a network hiccup in Lab Two
+
+42
+00:03:21,269 --> 00:03:26,616
+or Three, you have a built-in golden safety net: workshop slash Advanced slash
+
+43
+00:03:26,616 --> 00:03:32,306
+sampleapp contains a clean, tested snapshot of the exact finished Fundamentals app!
+
+44
+00:03:32,306 --> 00:03:37,036
+You can copy any missing backend file into their folder in seconds so
+
+45
+00:03:37,036 --> 00:03:42,177
+everyone builds the Lab Four UI and celebrates at the finish line together.
+
+46
+00:03:42,177 --> 00:03:47,867
+And when projecting on a bright room screen, toggle Chronicle's high-contrast White
+
+47
+00:03:47,867 --> 00:03:51,500
+Mode so every row is crystal clear from the back row!
+
+48
+00:03:52,400 --> 00:03:59,254
+Save the final five minutes for an energizing group treasure hunt at http://127.0.0.1:3210!
+
+49
+00:03:59,254 --> 00:04:05,355
+Have learners click Agent sessions to inspect the very workshop conversation they
+
+50
+00:04:05,355 --> 00:04:09,347
+just used to build the app, flip sorting from A to Z,
+
+51
+00:04:09,347 --> 00:04:13,791
+inspect a green-and-red file diff, and run a global search.
+
+52
+00:04:13,791 --> 00:04:20,193
+Then close by teasing the ninety-minute Advanced Workshop—where they will evolve this
+
+53
+00:04:20,193 --> 00:04:26,294
+exact app using an Orchestrator agent, four specialist agents with custom skills,
+
+54
+00:04:26,294 --> 00:04:31,717
+Microsoft Foundry AI session summaries, and a Windows desktop installer.
+
+55
+00:04:31,717 --> 00:04:33,600
+Have an awesome delivery!
