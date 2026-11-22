@@ -119,12 +119,19 @@ def synthesize_segment_wav(
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=75,
+                timeout=90,
             )
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 3:
+                time.sleep(2.5 * attempt)
+                continue
             if not resp.ok:
                 raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:240]}")
             data = resp.json()
             break
+        except requests.exceptions.Timeout:
+            if attempt == 3:
+                raise
+            time.sleep(2.0 * attempt)
         except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
             if attempt == 1:
                 # Immediately switch to Windows SChannel stack which handles corporate TLS cleanly
@@ -319,7 +326,7 @@ def synthesize_windows_wav(voice: str, narration: str, wav_path: Path):
     """], env=env, check=True)
 
 
-def build_variant_tts(variant: str, endpoint: str, model: str, token: str, *, local: bool = False):
+def build_variant_tts(variant: str, endpoint: str, model: str, token: str, *, local: bool = False, force: bool = False):
     board = ALL_STORYBOARDS[variant]
     voice = {"participant": "Microsoft Zira Desktop", "instructor": "Microsoft David Desktop"}[variant] if local else board["voice"]
     CACHE_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -336,7 +343,7 @@ def build_variant_tts(variant: str, endpoint: str, model: str, token: str, *, lo
         digest = hashlib.sha256(f"{model}|{voice}|{narration}".encode("utf-8")).hexdigest()[:14]
         wav_path = CACHE_AUDIO_DIR / f"{variant}_{idx:02d}_{scene['id']}_{digest}.wav"
 
-        if not wav_path.exists() or wav_path.stat().st_size < 1024:
+        if force or not wav_path.exists() or wav_path.stat().st_size < 1024:
             t0 = time.time()
             if local:
                 synthesize_windows_wav(voice, narration, wav_path)
@@ -348,6 +355,10 @@ def build_variant_tts(variant: str, endpoint: str, model: str, token: str, *, lo
         else:
             transcript = narration
             print(f"  [{variant} {idx}/{len(board['scenes'])}] {scene['id']} reused cached WAV -> {wav_path.name}")
+
+        for old_wav in CACHE_AUDIO_DIR.glob(f"{variant}_{idx:02d}_{scene['id']}_*.wav"):
+            if old_wav != wav_path:
+                old_wav.unlink(missing_ok=True)
 
         wav_dur, env = inspect_wav_metrics(wav_path, fps=30)
         scene_dur = round(lead_pad + wav_dur + tail_pad, 3)
@@ -393,13 +404,14 @@ def build_variant_tts(variant: str, endpoint: str, model: str, token: str, *, lo
 def main():
     args = sys.argv[1:]
     local = "--windows-voice" in args
-    targets = [arg for arg in args if arg != "--windows-voice"] or ["participant", "instructor"]
+    force = "--force" in args
+    targets = [arg for arg in args if arg not in ("--windows-voice", "--force")] or ["participant", "instructor"]
     for variant in targets:
         if variant not in ALL_STORYBOARDS:
             raise ValueError(f"Unknown storyboard variant: {variant}")
     if local:
         for variant in targets:
-            build_variant_tts(variant, "", "windows-speech", "", local=True)
+            build_variant_tts(variant, "", "windows-speech", "", local=True, force=force)
         return
 
     endpoint = os.environ.get(
@@ -411,16 +423,17 @@ def main():
     client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
     client_secret = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
 
-    # Only acquire Entra token if at least one scene is not yet cached
-    needs_network = False
-    for variant in targets:
-        board = ALL_STORYBOARDS[variant]
-        for idx, scene in enumerate(board["scenes"], start=1):
-            digest = hashlib.sha256(f"{model}|{board['voice']}|{scene['narration'].strip()}".encode("utf-8")).hexdigest()[:14]
-            wav_path = CACHE_AUDIO_DIR / f"{variant}_{idx:02d}_{scene['id']}_{digest}.wav"
-            if not wav_path.exists() or wav_path.stat().st_size < 1024:
-                needs_network = True
-                break
+    # Only acquire Entra token if force is set or at least one scene is not yet cached
+    needs_network = force
+    if not needs_network:
+        for variant in targets:
+            board = ALL_STORYBOARDS[variant]
+            for idx, scene in enumerate(board["scenes"], start=1):
+                digest = hashlib.sha256(f"{model}|{board['voice']}|{scene['narration'].strip()}".encode("utf-8")).hexdigest()[:14]
+                wav_path = CACHE_AUDIO_DIR / f"{variant}_{idx:02d}_{scene['id']}_{digest}.wav"
+                if not wav_path.exists() or wav_path.stat().st_size < 1024:
+                    needs_network = True
+                    break
 
     token = ""
     if needs_network:
@@ -433,7 +446,7 @@ def main():
         token = acquire_entra_token(tenant_id, client_id, client_secret)
 
     for variant in targets:
-        build_variant_tts(variant, endpoint, model, token)
+        build_variant_tts(variant, endpoint, model, token, force=force)
 
 
 if __name__ == "__main__":

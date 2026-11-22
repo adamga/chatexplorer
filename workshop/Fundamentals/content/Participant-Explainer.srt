@@ -1,159 +1,159 @@
 1
-00:00:00,350 --> 00:00:03,416
+00:00:00,350 --> 00:00:03,450
 Welcome to the Chronicle Fundamentals Workshop!
 
 2
-00:00:03,416 --> 00:00:06,547
+00:00:03,450 --> 00:00:06,615
 Have you ever wondered where your GitHub Copilot
 
 3
-00:00:06,547 --> 00:00:09,417
+00:00:06,615 --> 00:00:09,517
 chats go after you close Visual Studio Code?
 
 4
-00:00:09,417 --> 00:00:14,374
+00:00:09,517 --> 00:00:14,529
 Every question you ask, every thinking bubble, every command, and every code
 
 5
-00:00:14,374 --> 00:00:18,809
+00:00:14,529 --> 00:00:19,014
 change is saved inside a hidden detective notebook on your computer.
 
 6
-00:00:18,809 --> 00:00:22,462
+00:00:19,014 --> 00:00:22,707
 Today, in just sixty fun minutes, you are going to build
 
 7
-00:00:22,462 --> 00:00:26,115
+00:00:22,707 --> 00:00:26,400
 Chronicle—your very own local web app to explore it all!
 
 8
-00:00:27,015 --> 00:00:31,664
+00:00:27,300 --> 00:00:31,779
 Here is our coolest superpower today: the Zero-Package Rule!
 
 9
-00:00:31,664 --> 00:00:37,166
+00:00:31,779 --> 00:00:37,080
 Most apps download hundreds of outside mystery boxes from the internet.
 
 10
-00:00:37,166 --> 00:00:41,196
+00:00:37,080 --> 00:00:40,962
 If even one box breaks, the whole castle falls down!
 
 11
-00:00:41,196 --> 00:00:45,613
+00:00:40,962 --> 00:00:45,218
 Instead, we will build every single piece using the clean
 
 12
-00:00:45,613 --> 00:00:50,262
+00:00:45,218 --> 00:00:49,697
 LEGO bricks already built into Node.js and your web browser.
 
 13
-00:00:50,262 --> 00:00:55,299
+00:00:49,697 --> 00:00:54,550
 Zero npm installs, zero node_modules, and lightning-fast startup!
 
 14
-00:00:56,199 --> 00:01:00,508
+00:00:55,450 --> 00:01:00,165
 We kick off in Lab Zero with an easy seven-minute backpack check.
 
 15
-00:01:00,508 --> 00:01:05,479
+00:01:00,165 --> 00:01:05,605
 Check that Node version twenty-two or newer is ready in your terminal, open
 
 16
-00:01:05,479 --> 00:01:10,517
+00:01:05,605 --> 00:01:11,118
 the empty sampleapp folder directly in VS Code, and switch Copilot Chat into
 
 17
-00:01:10,517 --> 00:01:15,025
+00:01:11,118 --> 00:01:16,050
 Agent mode with a frontier model like Claude Sonnet, GPT, or Gemini!
 
 18
-00:01:15,925 --> 00:01:19,162
+00:01:16,950 --> 00:01:20,621
 Next, in Lab One, you paste your first prompt
 
 19
-00:01:19,162 --> 00:01:24,989
+00:01:20,621 --> 00:01:27,230
 to create Copilot's magic rulebook: dot-github slash copilot-instructions-dot-md.
 
 20
-00:01:24,989 --> 00:01:30,240
+00:01:27,230 --> 00:01:33,186
 From that moment on, VS Code automatically hands your rulebook to Copilot
 
 21
-00:01:30,240 --> 00:01:35,851
+00:01:33,186 --> 00:01:39,550
 on every single prompt—so Copilot remembers never to install outside packages!
 
 22
-00:01:36,751 --> 00:01:39,906
+00:01:40,450 --> 00:01:44,075
 In Lab Two, Copilot builds the brain of your app!
 
 23
-00:01:39,906 --> 00:01:44,027
+00:01:44,075 --> 00:01:48,810
 It learns how to read both classic VS Code chats and new Copilot
 
 24
-00:01:44,027 --> 00:01:49,049
+00:01:48,810 --> 00:01:54,581
 Agent sessions, indexes every word in a speedy background worker, and builds a
 
 25
-00:01:49,049 --> 00:01:54,072
+00:01:54,581 --> 00:02:00,351
 Spot-the-Difference engine so deleted lines glow red and new lines glow green.
 
 26
-00:01:54,072 --> 00:01:58,901
+00:02:00,351 --> 00:02:05,900
 Then you run node --test and watch green checkmarks light up your terminal!
 
 27
-00:01:59,801 --> 00:02:03,755
+00:02:06,800 --> 00:02:10,949
 In Lab Three, you build a fast, private local web
 
 28
-00:02:03,755 --> 00:02:10,050
+00:02:10,949 --> 00:02:17,553
 server in src/server.js using Node's built-in http module—no Express required!
 
 29
-00:02:10,050 --> 00:02:14,004
+00:02:17,553 --> 00:02:21,702
 It locks the door to 127.0.0.1 so random websites
 
 30
-00:02:14,004 --> 00:02:18,281
+00:02:21,702 --> 00:02:26,189
 can never peek at your chats, and automatically finds
 
 31
-00:02:18,281 --> 00:02:22,961
+00:02:26,189 --> 00:02:31,100
 your computer's default VS Code and Agent session folders!
 
 32
-00:02:23,861 --> 00:02:29,274
+00:02:32,000 --> 00:02:38,055
 Finally, in Lab Four, two fun prompts paint your entire browser playground!
 
 33
-00:02:29,274 --> 00:02:34,325
+00:02:38,055 --> 00:02:43,705
 You will create over sixty crisp SVG icons, a Markdown highlighter and
 
 34
-00:02:34,325 --> 00:02:39,016
+00:02:43,705 --> 00:02:48,953
 HTML safety shield, easy sorting by Date or Name, and a one-click
 
 35
-00:02:39,016 --> 00:02:43,707
+00:02:48,953 --> 00:02:54,200
 toggle between sleek Dark Mode and super-clear Bright White Mode!
 
 36
-00:02:44,607 --> 00:02:47,975
+00:02:55,100 --> 00:02:58,942
 At the finish line, use the Node start command in
 
 37
-00:02:47,975 --> 00:02:51,550
+00:02:58,942 --> 00:03:03,019
 Lab Four, open the local address it prints, and even
 
 38
-00:02:51,550 --> 00:02:55,743
+00:03:03,019 --> 00:03:07,802
 find the very workshop conversation you are having right now!
 
 39
-00:02:55,743 --> 00:02:58,217
+00:03:07,802 --> 00:03:10,624
 Open Lab Zero in VS Code, trust your
 
 40
-00:02:58,217 --> 00:03:02,273
+00:03:10,624 --> 00:03:15,250
 empty sampleapp folder, and let's build Chronicle together!

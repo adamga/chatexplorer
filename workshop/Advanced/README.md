@@ -15,6 +15,8 @@ Then you will command your **Orchestrator Agent** to build three production-grad
 
 ## Schedule & Lab Map (90 Minutes Total)
 
+**Presenting or attending?** Open the [Advanced media kit](./content/README.md) for the editable slide decks, captioned explainers, and delivery guidance. The videos are preparation and review material; they do not add time to the 90-minute lab schedule.
+
 | Lab | Topic | Time |
 |---|---|---|
 | **[Lab 00 — Intro, Baseline & Workshop Credentials](./Lab-00-Intro-and-Baseline.md)** | Open `workshop/Advanced/sampleapp`, verify the baseline zero-package app (`node --test`), select a frontier model, and review the shared Foundry Service Principal parameters | **8 min** |

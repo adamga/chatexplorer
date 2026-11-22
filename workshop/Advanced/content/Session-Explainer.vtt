@@ -1,0 +1,209 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:27.750
+Imagine inheriting a route migration.
+
+00:00:27.750 --> 00:00:49.875
+You can see three saved conversations
+in Chronicle, but which change landed,
+
+00:00:49.875 --> 00:01:06.500
+which check passed, and what should you
+do next?
+
+00:01:06.500 --> 00:01:09.875
+Lab zero gives us eight minutes to
+establish a baseline.
+
+00:01:09.875 --> 00:01:14.833
+Chronicle already parses two session
+formats and reconstructs file changes.
+
+00:01:14.833 --> 00:01:19.833
+A passing local suite gives us
+something to compare against after each
+
+00:01:19.833 --> 00:01:20.250
+change.
+
+00:01:20.250 --> 00:01:23.875
+Lab one spends seventeen minutes on
+ownership.
+
+00:01:23.875 --> 00:01:29.792
+A single public orchestrator reads,
+searches, delegates and tracks a
+
+00:01:29.792 --> 00:01:30.375
+checklist.
+
+00:01:30.375 --> 00:01:35.333
+It cannot edit the application, so a
+request has to cross an explicit
+
+00:01:35.333 --> 00:01:36.875
+boundary to the developer.
+
+00:01:36.875 --> 00:01:38.750
+The tester can run the code.
+
+00:01:38.750 --> 00:01:41.792
+The security reviewer can only read and
+search.
+
+00:01:41.792 --> 00:01:44.667
+Documentation explains the contract.
+
+00:01:44.667 --> 00:01:50.750
+If a test fails or the reviewer finds a
+serious leak, the lead sends the change
+
+00:01:50.750 --> 00:01:52.667
+back rather than declaring victory.
+
+00:01:52.667 --> 00:01:56.500
+Lab two gives the team fifteen minutes
+to encode its methods.
+
+00:01:56.500 --> 00:02:01.625
+The developer's zero-package skill
+teaches an atomic write: build a
+
+00:02:01.625 --> 00:02:07.208
+temporary file and rename it, so a
+partial write never becomes the saved
+
+00:02:07.208 --> 00:02:07.625
+configuration.
+
+00:02:07.625 --> 00:02:13.500
+The tester's playbook replaces identity
+and model servers with loopback mocks.
+
+00:02:13.500 --> 00:02:56.917
+Security checks what can leave the
+process.
+
+00:02:56.917 --> 00:03:00.417
+Documentation specifies the handoff
+format.
+
+00:03:00.417 --> 00:03:05.250
+Each skill name matches its folder and
+is attached to the matching role.
+
+00:03:05.250 --> 00:03:08.458
+Lab three takes fifteen minutes.
+
+00:03:08.458 --> 00:03:14.958
+The dialog collects the tenant, client,
+secret, endpoint and agent name.
+
+00:03:14.958 --> 00:03:20.667
+The browser may learn that a secret is
+saved, but must not retrieve its value
+
+00:03:20.667 --> 00:03:22.167
+from the configuration API.
+
+00:03:22.167 --> 00:03:27.083
+The local server asks Entra for a
+token, then uses it for a Foundry
+
+00:03:27.083 --> 00:03:27.792
+Responses request.
+
+00:03:27.792 --> 00:03:32.000
+A READY reply proves more than saving
+the settings.
+
+00:03:32.000 --> 00:03:36.792
+Separate authentication and agent
+timings help locate a failure without
+
+00:03:36.792 --> 00:03:37.750
+printing credentials.
+
+00:03:37.750 --> 00:03:43.083
+Lab four has eighteen minutes to turn a
+selected session into portable
+
+00:03:43.083 --> 00:03:43.542
+Markdown.
+
+00:03:43.542 --> 00:03:46.875
+The button lives next to Read full
+session.
+
+00:03:46.875 --> 00:03:51.875
+The input is a read-only source; the
+new summary belongs in a separate
+
+00:03:51.875 --> 00:03:52.583
+output folder.
+
+00:03:52.583 --> 00:05:17.417
+Build a chronological digest of
+prompts, recorded decisions, tools and
+
+00:05:17.417 --> 00:05:25.917
+edits.
+
+00:05:25.917 --> 00:05:29.333
+Replace machine paths with
+workspace-relative ones.
+
+00:05:29.333 --> 00:05:34.667
+A short digest goes straight to
+synthesis; a long one becomes bounded
+
+00:05:34.667 --> 00:05:38.250
+chunks whose individual digests feed
+the final pass.
+
+00:05:38.250 --> 00:05:42.333
+The progress dialog reports phases, not
+just a spinner.
+
+00:05:42.333 --> 00:05:54.792
+Inspect a redacted operation log for
+the job history.
+
+00:05:54.792 --> 00:06:11.500
+Then read the Markdown as the next
+developer: can you name a tested result
+
+00:06:11.500 --> 00:06:17.458
+and the next unfinished task?
+
+00:06:17.458 --> 00:06:22.125
+Lab five closes with seventeen minutes
+on release evidence.
+
+00:06:22.125 --> 00:06:25.000
+A pure Node renderer produces the icon.
+
+00:06:25.000 --> 00:06:39.583
+Test its URL, media type and signature.
+
+00:06:39.583 --> 00:06:44.417
+A visible browser tab icon alone could
+be an old cached copy.
+
+00:06:44.417 --> 00:06:49.667
+The optional desktop wrapper adds a
+sandboxed window, a separate server
+
+00:06:49.667 --> 00:06:52.042
+process and narrow native pickers.
+
+00:06:52.042 --> 00:06:54.083
+Inspect it without running it.
+
+00:06:54.083 --> 00:06:58.875
+Our deliverable is still the browser
+app, and the next developer gets a
+
+00:06:58.875 --> 00:07:01.833
+portable plan instead of somebody
+else's environment.

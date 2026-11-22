@@ -1,0 +1,269 @@
+1
+00:00:00,000 --> 00:00:04,042
+Before learners arrive, open the
+starter directly in VS Code.
+
+2
+00:00:04,042 --> 00:00:35,708
+Stage a small session with a decision
+and a follow-up.
+
+3
+00:00:35,708 --> 00:00:44,833
+Ask the room to predict what the next
+developer would need; return to their
+
+4
+00:00:44,833 --> 00:00:47,458
+answers at the end.
+
+5
+00:00:47,458 --> 00:00:54,292
+Use the first eight minutes for three
+checks: the workspace root, a current
+
+6
+00:00:54,292 --> 00:00:57,458
+Node runtime and a passing suite.
+
+7
+00:00:57,458 --> 00:01:14,833
+Select Agent mode and a frontier model.
+
+8
+00:01:14,833 --> 00:01:27,833
+Distribute the five connection values
+privately, not in the projected chat.
+
+9
+00:01:27,833 --> 00:01:31,458
+In the next seventeen minutes, project
+the customizations view.
+
+10
+00:01:31,458 --> 00:01:35,208
+Ask someone to identify the one role
+that should appear in the chat picker.
+
+11
+00:01:35,208 --> 00:02:13,458
+Then show why the lead has an agent
+tool but no edit or execute permission.
+
+12
+00:02:13,458 --> 00:02:18,792
+If the team does not appear, check
+which folder VS Code opened and inspect
+
+13
+00:02:18,792 --> 00:02:19,917
+the frontmatter warnings.
+
+14
+00:02:19,917 --> 00:02:24,708
+If a security worker proposes a patch,
+ask who actually has permission to
+
+15
+00:02:24,708 --> 00:02:25,083
+edit.
+
+16
+00:02:25,083 --> 00:02:29,667
+The reviewer should return a finding
+with a file and line.
+
+17
+00:02:29,667 --> 00:02:36,417
+For lab two, reserve ten of fifteen
+minutes for skill creation, three for
+
+18
+00:02:36,417 --> 00:02:39,042
+attachment and two for discovery.
+
+19
+00:02:39,042 --> 00:02:43,417
+Ask: if we replace the docs playbook,
+can the writer suddenly run a terminal?
+
+20
+00:02:43,417 --> 00:02:51,292
+No.
+
+21
+00:02:51,292 --> 00:02:53,458
+Permissions belong to the agent.
+
+22
+00:02:53,458 --> 00:02:57,625
+A missing skill usually warrants a
+spelling check before another
+
+23
+00:02:57,625 --> 00:02:58,458
+generation attempt.
+
+24
+00:02:58,458 --> 00:03:44,375
+Compare the directory, frontmatter name
+and worker reference side by side.
+
+25
+00:03:44,375 --> 00:03:48,583
+Have everyone switch to Chronicle
+Orchestrator before dispatching the
+
+26
+00:03:48,583 --> 00:03:49,542
+first feature.
+
+27
+00:03:49,542 --> 00:03:54,625
+In lab three, allow ten minutes for
+implementation and five for the live
+
+28
+00:03:54,625 --> 00:03:55,000
+test.
+
+29
+00:03:55,000 --> 00:03:59,917
+Project the fixture dialog for
+orientation, then blank the projector
+
+30
+00:03:59,917 --> 00:04:01,417
+for real entry.
+
+31
+00:04:01,417 --> 00:04:05,625
+Ask learners what the public settings
+endpoint should reveal about the
+
+32
+00:04:05,625 --> 00:04:07,542
+secret: only whether it exists.
+
+33
+00:04:07,542 --> 00:04:12,792
+If token acquisition fails, check the
+tenant, client and secret privately.
+
+34
+00:04:12,792 --> 00:04:17,875
+If the token succeeds but Foundry
+forbids the call, check the project
+
+35
+00:04:17,875 --> 00:04:20,417
+target and Foundry Agent Consumer
+assignment.
+
+36
+00:04:20,417 --> 00:04:30,417
+Timebox the detour; label a mock-only
+result honestly.
+
+37
+00:04:30,417 --> 00:04:34,875
+In the eighteen-minute handoff lab,
+have a learner choose a session they
+
+38
+00:04:34,875 --> 00:04:36,250
+are permitted to send.
+
+39
+00:04:36,250 --> 00:04:43,292
+Ask for one known fact and one open
+task before clicking Create session
+
+40
+00:04:43,292 --> 00:04:43,833
+summary.
+
+41
+00:04:43,833 --> 00:04:47,292
+Those are your acceptance criteria, not
+the word count.
+
+42
+00:04:47,292 --> 00:05:39,792
+Demonstrate the multi-chunk path with a
+deterministic test.
+
+43
+00:05:39,792 --> 00:05:52,792
+The expected calls are a digest for
+each part and one final synthesis.
+
+44
+00:05:52,792 --> 00:05:56,250
+Ask why a short session skips the extra
+round trips.
+
+45
+00:05:56,250 --> 00:05:59,208
+Keep the live example small enough to
+finish.
+
+46
+00:05:59,208 --> 00:06:51,750
+Show how the log differs from the
+Markdown output.
+
+47
+00:06:51,750 --> 00:06:55,625
+If the popup is blocked, use the inline
+fallback.
+
+48
+00:06:55,625 --> 00:07:01,083
+If a job fails, inspect its last phase
+rather than rerunning blindly.
+
+49
+00:07:01,083 --> 00:07:05,667
+Never ask someone to paste a token or a
+raw credential file.
+
+50
+00:07:05,667 --> 00:07:11,292
+In lab five, let the tester draft
+checks while the developer renders the
+
+51
+00:07:11,292 --> 00:07:14,750
+icon, but run them after the asset
+lands.
+
+52
+00:07:14,750 --> 00:07:18,750
+If time slips, cut the desktop tour to
+one diagram.
+
+53
+00:07:18,750 --> 00:07:23,375
+Do not skip the direct PNG request or
+the regression suite.
+
+54
+00:07:23,375 --> 00:07:28,208
+For the closing recap, ask where the
+desktop server would run, where its
+
+55
+00:07:28,208 --> 00:07:30,833
+credentials would live, and what ships
+today.
+
+56
+00:07:30,833 --> 00:07:36,167
+The answers are a separate utility
+process, writable per-user storage
+
+57
+00:07:36,167 --> 00:07:40,542
+outside the installer, and the
+package-free browser release.
