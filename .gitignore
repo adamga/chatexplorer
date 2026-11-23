@@ -14,5 +14,7 @@
 resourceinfo.txt
 **/content/.cache/
 
+# Generated video exports stay local; keep their source scripts and captions tracked.
+/workshop/Advanced/content/v1/*.mp4
 
 

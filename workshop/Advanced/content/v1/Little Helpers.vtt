@@ -1,0 +1,400 @@
+WEBVTT
+
+00:00:00.300 --> 00:00:10.583
+Imagine you are building a giant LEGO spaceship, and instead of just
+one robot helper, you get a whole team of smart robot friends!
+
+00:00:10.583 --> 00:00:21.236
+Today we are going to meet that team in GitHub Copilot, see how each
+helper gets its own special job, and build a neat treasure map for
+
+00:00:21.236 --> 00:00:25.340
+Chronicle so the next builder knows just what to do!
+
+00:00:26.067 --> 00:00:36.177
+First, we take a quick tour to see where our robot helpers live, how
+their brains work, and how we give them rules and recipe cards.
+
+00:00:36.177 --> 00:00:46.429
+Then we jump across six fun stepping-stone missions—from checking
+our toy box in Lab Zero all the way to putting a shiny badge on our
+
+00:00:46.429 --> 00:00:48.356
+finished app in Lab Five!
+
+00:00:49.067 --> 00:00:56.791
+Have you ever stopped playing a big game, and the next day your
+friend asked, wait—what happened so far?
+
+00:00:56.791 --> 00:01:01.247
+Reading every single word from yesterday takes way too long!
+
+00:01:01.247 --> 00:01:10.960
+Our app, Chronicle, reads big chat stories safely without changing a
+single word, and our robot team writes a short, crystal-clear
+
+00:01:10.960 --> 00:01:13.650
+handoff note for tomorrow's builder!
+
+00:01:14.367 --> 00:01:15.045
+Part One!
+
+00:01:15.045 --> 00:01:25.292
+Let's peek inside the robot clubhouse and discover all the different
+rooms where our helpers can work, plus the secret engine room that
+
+00:01:25.292 --> 00:01:26.734
+keeps them running!
+
+00:01:27.467 --> 00:01:36.089
+At first, a helper could only finish the next word you were typing,
+or answer one little question.
+
+00:01:36.089 --> 00:01:40.577
+Then one helper learned to use tools all by itself.
+
+00:01:40.577 --> 00:01:51.487
+Now, you get to be the conductor of a whole band—giving each
+specialist its own instrument so nobody plays over anyone else!
+
+00:01:52.200 --> 00:01:54.923
+Where do our helpers hang out?
+
+00:01:54.923 --> 00:01:56.648
+In five cool spots!
+
+00:01:56.648 --> 00:02:09.133
+They can sit right beside your blocks in VS Code Chat, watch lots of
+tables at once in the Agents Window, talk fast on a walkie-talkie in
+
+00:02:09.133 --> 00:02:19.704
+the terminal CLI, open their own big Copilot App desk, or even work
+up in the Cloud while your computer takes a nap!
+
+00:02:20.433 --> 00:02:23.398
+Look at those two big control rooms!
+
+00:02:23.398 --> 00:02:32.952
+On the left, the Agents Window lets you see all your helpers side by
+side and check every single block they touched.
+
+00:02:32.952 --> 00:02:43.148
+On the right, the CLI and Copilot App have magic words like
+slash-plan to draw a blueprint first, and slash-fleet to send a
+
+00:02:43.148 --> 00:02:45.883
+whole squad zooming off together!
+
+00:02:46.600 --> 00:02:51.178
+Before a helper touches your blocks, you set three dials!
+
+00:02:51.178 --> 00:02:55.113
+Dial one says: let's make a plan before building.
+
+00:02:55.113 --> 00:02:59.370
+Dial two says: ask a grown-up before using big tools.
+
+00:02:59.370 --> 00:03:08.285
+And dial three gives each builder their very own table, so two
+friends never accidentally smash the same tower!
+
+00:03:09.000 --> 00:03:16.755
+Here is a cool secret: the chat window on your screen is just the
+glass window you peek through!
+
+00:03:16.755 --> 00:03:25.156
+Behind the glass is the Harness—that is the helper's thinking loop
+that picks tools and checks its work.
+
+00:03:25.156 --> 00:03:34.688
+And holding it all is the Agent Host—a sturdy engine room that keeps
+your helper working even if you close the window!
+
+00:03:35.400 --> 00:03:40.093
+Every robot helper carries just one backpack for memory!
+
+00:03:40.093 --> 00:03:51.399
+Every time you take another turn, the helper has to carry the rules,
+everything you both said before, and every big page it opened all
+
+00:03:51.399 --> 00:03:52.327
+over again!
+
+00:03:52.327 --> 00:04:02.047
+If the backpack gets way too stuffed, the helper forgets things in
+the middle—so keeping notes tiny is a superpower!
+
+00:04:02.767 --> 00:04:11.114
+Instead of dumping every LEGO brick on the floor at once, smart
+builders work in three neat steps!
+
+00:04:11.114 --> 00:04:14.947
+First, look around without touching anything.
+
+00:04:14.947 --> 00:04:18.269
+Second, draw a simple plan on one card.
+
+00:04:18.269 --> 00:04:24.401
+Third, build just what is on the card and test that it stands up
+strong!
+
+00:04:25.133 --> 00:04:25.856
+Part Two!
+
+00:04:25.856 --> 00:04:36.282
+Now let's see how we write simple note cards in Markdown to give our
+helpers house rules, job badges with special tool belts, and
+
+00:04:36.282 --> 00:04:38.383
+step-by-step recipe cards!
+
+00:04:39.100 --> 00:04:42.292
+Look at all six ways we guide our team!
+
+00:04:42.292 --> 00:04:45.647
+House Rules on the door are for everyone.
+
+00:04:45.647 --> 00:04:49.739
+Recipe Cards teach tricky tricks only when needed.
+
+00:04:49.739 --> 00:04:53.749
+Job Badges pick which tools each helper can hold.
+
+00:04:53.749 --> 00:04:56.695
+Little Notepads keep side-jobs tidy.
+
+00:04:56.695 --> 00:05:03.487
+Safety Gates check rules automatically, and Magic Whiteboards let us
+draw together!
+
+00:05:04.200 --> 00:05:10.446
+A Skill is like a laminated recipe card kept inside its own labeled
+folder!
+
+00:05:10.446 --> 00:05:18.940
+At first, your helper only reads the short label on the outside tab
+so its backpack stays super light.
+
+00:05:18.940 --> 00:05:27.351
+Only when you ask for that exact job does it open the folder, read
+the steps, and run helper scripts!
+
+00:05:28.067 --> 00:05:31.159
+Imagine two drawers in the kitchen.
+
+00:05:31.159 --> 00:05:35.222
+One says Stuff—nobody knows when to open that!
+
+00:05:35.222 --> 00:05:40.258
+The other says Pancake Recipe—Open When Making Breakfast!
+
+00:05:40.258 --> 00:05:50.417
+When your skill description says both WHAT it does and WHEN to use
+it, your helper grabs the right card every time!
+
+00:05:51.133 --> 00:05:55.905
+Now look at a Custom Agent badge in dot-agent-dot-md!
+
+00:05:55.905 --> 00:06:04.367
+Our Safety Owl gets eyes to read and a magnifying glass to
+search—but NO pencil and NO hammer!
+
+00:06:04.367 --> 00:06:14.721
+Even if Safety Owl spots a mistake, it cannot scribble on your
+castle—it tells the Team Captain which block to fix!
+
+00:06:15.433 --> 00:06:24.095
+Just like train tracks come in slightly different sizes, different
+harnesses read a few badge stickers differently!
+
+00:06:24.095 --> 00:06:33.133
+Checking which engine you picked in VS Code makes sure every sticker
+on your helper's badge works on the very first try!
+
+00:06:33.833 --> 00:06:34.832
+Part Three!
+
+00:06:34.832 --> 00:06:46.976
+Let's check out automatic safety bells called Hooks, shared magic
+drawing boards called Canvases, and how our Team Captain keeps four
+
+00:06:46.976 --> 00:06:50.081
+helpers working smoothly together!
+
+00:06:50.800 --> 00:06:55.070
+What if a builder reaches for the wrong shelf by mistake?
+
+00:06:55.070 --> 00:07:00.089
+A Hook is like a friendly robot referee standing right by the door!
+
+00:07:00.089 --> 00:07:09.591
+Before any tool runs, the Hook checks the rulebook in a split
+second—and if someone tries to touch a secret file, it blows the
+
+00:07:09.591 --> 00:07:11.250
+whistle and says Stop!
+
+00:07:11.967 --> 00:07:17.045
+Scrolling up and down a giant chat list can make your eyes dizzy!
+
+00:07:17.045 --> 00:07:22.124
+A Canvas opens a bright magic whiteboard right next to your chat!
+
+00:07:22.124 --> 00:07:32.516
+You and your helper can look at the same picture, test an agent, or
+move cards together—while keeping secret keys safely locked away!
+
+00:07:33.233 --> 00:07:44.048
+Look how tidy our dot-github shelf is: one file for house rules, one
+folder for helper badges, one folder for recipe cards, and one for
+
+00:07:44.048 --> 00:07:45.089
+safety hooks!
+
+00:07:45.089 --> 00:07:55.662
+And whenever the Captain sends a helper on an errand, that helper
+gets its own clean notepad—so all the messy searching stays out of
+
+00:07:55.662 --> 00:07:57.183
+the Captain's head!
+
+00:07:57.900 --> 00:08:00.279
+Meet our Chronicle dream team!
+
+00:08:00.279 --> 00:08:10.639
+Captain Orchestrator holds the checklist and calls four friends:
+Developer builds, Tester tries pretend doorbells, Security checks
+
+00:08:10.639 --> 00:08:15.899
+with its magnifying glass, and Documentation writes the guidebook!
+
+00:08:15.899 --> 00:08:20.578
+With five safety rules, nobody steps on anyone else's toes!
+
+00:08:21.300 --> 00:08:23.629
+Part Four—adventure time!
+
+00:08:23.629 --> 00:08:28.568
+Now we roll up our sleeves for six hands-on missions!
+
+00:08:28.568 --> 00:08:38.630
+Let's watch our robot team connect a real AI brain and turn a big
+coding story into a portable treasure map!
+
+00:08:39.333 --> 00:08:49.094
+Every mission follows the same rhythm: tell the Captain the goal,
+let the specialists do their jobs, check our green checkmark
+
+00:08:49.094 --> 00:08:52.193
+together, and celebrate what we learned!
+
+00:08:52.193 --> 00:09:01.049
+Look at our starting app on the right—it already opens chat stories
+right in your browser with zero extra packages!
+
+00:09:01.767 --> 00:09:02.794
+Mission Zero!
+
+00:09:02.794 --> 00:09:10.535
+Before adding rocket boosters to a toy car, you roll it on the floor
+to make sure the wheels spin!
+
+00:09:10.535 --> 00:09:20.793
+We open our starter folder, run a quick test to see green lights,
+pick our smart brain model, and keep our secret key card tucked
+
+00:09:20.793 --> 00:09:22.542
+safely away for later!
+
+00:09:23.267 --> 00:09:24.277
+Mission One!
+
+00:09:24.277 --> 00:09:29.500
+Time to make five shiny badges inside dot-github-slash-agents!
+
+00:09:29.500 --> 00:09:40.263
+Developer and Tester get building tools, Documentation writes
+guides, Security gets look-only glasses, and Captain Orchestrator
+
+00:09:40.263 --> 00:09:43.314
+gets the megaphone to lead the team!
+
+00:09:44.033 --> 00:09:45.006
+Mission Two!
+
+00:09:45.006 --> 00:09:51.244
+Now each specialist gets its very own recipe card in
+dot-github-slash-skills!
+
+00:09:51.244 --> 00:10:02.323
+Builder learns how to build without store-bought kits, Tester learns
+pretend-doorbell tests, Security gets a six-point safety checklist,
+
+00:10:02.323 --> 00:10:06.396
+and Story Writer learns how to write clear guides!
+
+00:10:07.100 --> 00:10:10.428
+High five—our whole robot team is ready!
+
+00:10:10.428 --> 00:10:21.627
+Let's remember our three big secrets so far: the Agent Host keeps
+helpers running behind the window, taking away the pencil guarantees
+
+00:10:21.627 --> 00:10:28.647
+Safety Owl can't scribble, and clear recipe labels help helpers grab
+the right card!
+
+00:10:29.367 --> 00:10:30.482
+Mission Three!
+
+00:10:30.482 --> 00:10:38.371
+Now we ask Captain Orchestrator to build a safe secret lockbox and a
+doorbell to Microsoft Foundry!
+
+00:10:38.371 --> 00:10:49.116
+Tester tries a pretend doorbell first, Safety Owl checks that our
+secret password never leaks into the logbook, and then we press Test
+
+00:10:49.116 --> 00:10:51.201
+Connection and hear READY!
+
+00:10:51.933 --> 00:10:54.331
+Mission Four—the magic moment!
+
+00:10:54.331 --> 00:10:58.647
+Some chat stories are as long as a giant chapter book!
+
+00:10:58.647 --> 00:11:08.855
+Our app chops big stories into bite-sized pieces, turns computer
+paths into neat portable names, shows a live progress bar, and
+
+00:11:08.855 --> 00:11:12.954
+writes one clean summary note for the next builder!
+
+00:11:13.667 --> 00:11:16.431
+Mission Five—our grand finale!
+
+00:11:16.431 --> 00:11:23.895
+Developer paints a crisp Chronicle icon from pure math—still zero
+extra packages!
+
+00:11:23.895 --> 00:11:36.058
+Tester checks the icon, we open our finished browser app, and we
+peek at how a desktop box keeps secrets safe outside the installer.
+
+00:11:36.058 --> 00:11:37.625
+Mission complete!
+
+00:11:38.333 --> 00:11:39.355
+You did it!
+
+00:11:39.355 --> 00:11:51.017
+Now you know how robot helpers work in different rooms, how job
+badges, recipe cards, safety bells, and magic whiteboards fit
+
+00:11:51.017 --> 00:11:58.854
+together, and how one great Team Captain helps everyone build
+amazing things safely.
+
+00:11:58.854 --> 00:12:01.268
+Happy building, explorers!

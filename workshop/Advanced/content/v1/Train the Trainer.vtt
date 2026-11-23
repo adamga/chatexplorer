@@ -1,0 +1,545 @@
+WEBVTT
+
+00:00:00.300 --> 00:00:07.478
+Welcome to the Train-the-Trainer walkthrough for Advanced GitHub
+Copilot: Agents, Skills, and Subagents.
+
+00:00:07.478 --> 00:00:16.845
+This deck follows the v2 conceptual arc—surfaces, runtime harnesses,
+Markdown customization, guardrails, and safe parallelism—and lands
+
+00:00:16.845 --> 00:00:20.453
+directly in Chronicle's six 90-minute hands-on labs.
+
+00:00:20.453 --> 00:00:27.700
+Open with energy: learners move from prompting one generalist
+assistant to directing an engineering team.
+
+00:00:28.400 --> 00:00:36.516
+Walk the room through the two-part structure: present the mental
+model cleanly up front, then run six tightly timeboxed labs totaling
+
+00:00:36.516 --> 00:00:37.919
+exactly ninety minutes.
+
+00:00:37.919 --> 00:00:45.835
+Point out the hard clock gates: by minute forty, every learner has
+their Orchestrator and four skilled workers wired up; by minute
+
+00:00:45.835 --> 00:00:52.350
+fifty-five, Foundry connectivity is verified; and the final
+seventeen minutes protect browser verification.
+
+00:00:53.067 --> 00:01:00.093
+Anchor the five learning outcomes in Chronicle, our zero-package
+Node twenty-two session explorer.
+
+00:01:00.093 --> 00:01:03.320
+Why does Chronicle resonate so well in class?
+
+00:01:03.320 --> 00:01:10.705
+Because learners experience context growth firsthand while building
+an app that solves session handoff!
+
+00:01:10.705 --> 00:01:19.662
+Stress the two invariants early: zero external npm packages in
+package.json, and original chat history files remain strictly
+
+00:01:19.662 --> 00:01:20.384
+read-only.
+
+00:01:21.100 --> 00:01:24.014
+Transition into Part One: the Agent Landscape.
+
+00:01:24.014 --> 00:01:32.102
+Your goal in the next seven slides is to clear up vocabulary
+confusion around surfaces, harnesses, the Agent Host, permissions,
+
+00:01:32.102 --> 00:01:36.050
+and context budgets before anyone writes a customization file.
+
+00:01:36.767 --> 00:01:41.169
+Use this four-step progression to reframe the developer's job.
+
+00:01:41.169 --> 00:01:46.493
+Most attendees already use inline completions, Chat, and
+single-agent mode.
+
+00:01:46.493 --> 00:01:50.966
+Today's leap is the rightmost box: directing specialist agents.
+
+00:01:50.966 --> 00:01:58.776
+Warn them early that more agents only speed you up when tasks have
+clear boundaries and non-overlapping files.
+
+00:01:59.500 --> 00:02:05.024
+Position all five surfaces as one family sharing your repo's
+customizations.
+
+00:02:05.024 --> 00:02:13.659
+Contrast IDE Chat—best when inspecting lines right beside
+src/server.js—with VS Code's Agents Window for multi-session
+
+00:02:13.659 --> 00:02:23.319
+oversight, Copilot CLI for terminal-first planning and scripting,
+the standalone GitHub Copilot App built on the CLI engine, and the
+
+00:02:23.319 --> 00:02:26.538
+Cloud coding agent on GitHub-hosted runners.
+
+00:02:26.538 --> 00:02:30.100
+Reassure learners: our labs only require VS Code.
+
+00:02:30.800 --> 00:02:33.922
+Give a concrete 30-second tour here.
+
+00:02:33.922 --> 00:02:45.534
+Show how code dash-dash-agents opens the VS Code Agents Window with
+a session grid, Branch-versus-New-Worktree picker, and turn-level
+
+00:02:45.534 --> 00:02:46.669
+Changes view.
+
+00:02:46.669 --> 00:02:57.736
+Then highlight how Copilot CLI and the desktop Copilot App pair
+slash-plan with slash-fleet for parallel subagent execution and
+
+00:02:57.736 --> 00:03:04.359
+pull-request review—all reading the exact same dot-github skills and
+agents.
+
+00:03:05.067 --> 00:03:11.914
+Hammer home that Mode, Permissions, and Isolation are three separate
+dials—never conflate them!
+
+00:03:11.914 --> 00:03:16.383
+Plan mode is a workflow conversation, NOT a security boundary.
+
+00:03:16.383 --> 00:03:21.429
+And a Git worktree isolates file edits, NOT machine or network
+access.
+
+00:03:21.429 --> 00:03:29.574
+Because Chronicle labs use private Foundry credentials in dot-env,
+forbid blanket Approve-All in local checkouts.
+
+00:03:30.300 --> 00:03:36.699
+This slide resolves one of the most common points of confusion in
+advanced workshops.
+
+00:03:36.699 --> 00:03:46.175
+Separate three layers: the UI client window, the Harness
+runtime—such as Copilot SDK, VS Code Local, Claude, or Codex—and the
+
+00:03:46.175 --> 00:03:47.615
+Agent Host process.
+
+00:03:47.615 --> 00:03:54.165
+Ask the room two check questions: Does switching from Sonnet to GPT
+change the harness?
+
+00:03:54.165 --> 00:03:55.595
+No, only the model.
+
+00:03:55.595 --> 00:03:57.025
+Is Cloud a harness?
+
+00:03:57.025 --> 00:03:59.510
+No—Cloud is where execution runs!
+
+00:03:59.510 --> 00:04:06.888
+And because Agent Host owns the session in its own process, closing
+a window doesn't kill the run.
+
+00:04:07.600 --> 00:04:15.445
+Walk through the seven layers competing inside one context window
+and point to the rising ten-turn bar chart.
+
+00:04:15.445 --> 00:04:25.228
+Every turn re-sends the accumulated conversation and tool outputs,
+driving up token consumption and causing middle-of-context drift, or
+
+00:04:25.228 --> 00:04:26.098
+context rot.
+
+00:04:26.098 --> 00:04:35.433
+Connect this directly to BOTH halves of our labs: subagents keep
+noisy exploration out of your main chat, and Chronicle's chunked
+
+00:04:35.433 --> 00:04:39.629
+summarizer turns huge transcripts into lean handoff files.
+
+00:04:40.333 --> 00:04:48.600
+Present Research, Plan, Implement as the rhythm learners will see
+their Chronicle Orchestrator execute automatically.
+
+00:04:48.600 --> 00:04:57.636
+Research reads files and surfaces risks; Plan produces an explicit
+file contract; Implement writes a focused diff and runs node
+
+00:04:57.636 --> 00:04:58.703
+dash-dash-test.
+
+00:04:58.703 --> 00:05:03.649
+Each phase passes forward a compact summary instead of raw tool
+noise.
+
+00:05:04.367 --> 00:05:08.753
+Welcome to Part Two: Controlling Agents and Skills in Markdown.
+
+00:05:08.753 --> 00:05:17.926
+Slow down slightly on the next five slides—learners will author
+these exact YAML frontmatter fields in Labs One and Two, so clarity
+
+00:05:17.926 --> 00:05:21.217
+on syntax and enforcement pays off immediately.
+
+00:05:21.933 --> 00:05:27.088
+Walk this table top to bottom and spotlight the rightmost column:
+Guarantee!
+
+00:05:27.088 --> 00:05:33.329
+Instructions and Skills are model-driven—prose guides behavior, it
+doesn't enforce security.
+
+00:05:33.329 --> 00:05:42.402
+Custom Agent tool lists enforce capability boundaries, Subagents
+enforce context isolation, Hooks enforce deterministic shell checks,
+
+00:05:42.402 --> 00:05:45.199
+and Canvases provide shared visual state.
+
+00:05:45.199 --> 00:05:48.183
+Ask the room this distinction during recaps!
+
+00:05:48.900 --> 00:05:53.430
+Break down the open Agent Skills format under dot-github slash
+skills.
+
+00:05:53.430 --> 00:06:01.773
+Stress rule number one for Lab Two: the YAML name field must match
+the parent folder name character-for-character—lowercase with
+
+00:06:01.773 --> 00:06:02.294
+hyphens!
+
+00:06:02.294 --> 00:06:11.003
+Highlight three-stage progressive disclosure on the right: metadata
+costs roughly a hundred tokens at startup, the SKILL.md body loads
+
+00:06:11.003 --> 00:06:17.177
+only when matched, and bundled scripts execute deterministically
+without bloating prompt prose.
+
+00:06:17.900 --> 00:06:20.819
+The description field is the router trigger!
+
+00:06:20.819 --> 00:06:29.497
+Contrast the red anti-pattern—'Helpful test utilities'—against our
+actual Lab Two skill description that names local mock servers,
+
+00:06:29.497 --> 00:06:31.833
+OAuth2, and Foundry client changes.
+
+00:06:31.833 --> 00:06:40.717
+Coach learners to test skill discovery with natural user prompts
+that do NOT mention the skill's filename—if it doesn't fire, sharpen
+
+00:06:40.717 --> 00:06:41.785
+the description!
+
+00:06:42.500 --> 00:06:45.990
+Walk every YAML field in chronicle-security.agent.md.
+
+00:06:45.990 --> 00:06:54.813
+Point out tools: read and search—omitting edit and execute creates a
+true read-only auditor enforced by the harness, not polite prose.
+
+00:06:54.813 --> 00:07:02.842
+Explain user-invocable: false—it hides specialist workers from the
+user's Chat dropdown to prevent clutter, while keeping
+
+00:07:02.842 --> 00:07:11.402
+disable-model-invocation false so Chronicle Orchestrator can still
+invoke them as subagents, preloaded with their matching skills
+
+00:07:11.402 --> 00:07:11.800
+array!
+
+00:07:12.500 --> 00:07:16.544
+Keep this compatibility table handy during Labs One and Two!
+
+00:07:16.544 --> 00:07:25.416
+Notice why harness awareness matters: the Copilot harness, CLI,
+Copilot App, and Cloud agent support skills, mcp-servers, and hooks
+
+00:07:25.416 --> 00:07:30.969
+frontmatter, whereas VS Code's Local harness uses agents allow-lists
+and handoffs.
+
+00:07:30.969 --> 00:07:40.051
+Also flag subagent instruction inheritance: never assume a subagent
+silently read your root instructions—reinforce critical invariants
+
+00:07:40.051 --> 00:07:43.236
+like zero-packages in each worker's agent file!
+
+00:07:43.967 --> 00:07:50.511
+Move into Part Three: Hooks, Canvases, repository structure, and
+subagent orchestration.
+
+00:07:50.511 --> 00:07:59.870
+These four slides complete the conceptual toolkit and show how
+deterministic guardrails, visual workspaces, and hub-and-spoke
+
+00:07:59.870 --> 00:08:01.667
+delegation fit together.
+
+00:08:02.367 --> 00:08:11.067
+Connect BOC's lifecycle table with a concrete dot-github-slash-hooks
+JSON example.
+
+00:08:11.067 --> 00:08:25.591
+Unlike instructions—which ask an LLM nicely—hooks run deterministic
+non-AI scripts at events like preToolUse, postToolUse, sessionStart,
+
+00:08:25.591 --> 00:08:27.514
+and subagentStart.
+
+00:08:27.514 --> 00:08:42.045
+A preToolUse script inspects the proposed tool JSON on stdin and can
+return permissionDecision deny to block out-of-lane edits or secret
+
+00:08:42.045 --> 00:08:42.793
+access.
+
+00:08:42.793 --> 00:08:53.191
+Remind trainers: hooks execute code on the machine, so review hook
+scripts and timeouts carefully!
+
+00:08:53.900 --> 00:09:03.125
+Explain Canvases clearly: instead of burying interactive artifacts
+inside scrolling chat text, supported sessions in the GitHub Copilot
+
+00:09:03.125 --> 00:09:11.667
+App and VS Code open a side-by-side interactive surface—addressed by
+canvasId for the type and instanceId for the live panel.
+
+00:09:11.667 --> 00:09:20.712
+Both the developer and the agent can inspect and drive actions on
+that panel—like Microsoft Foundry's Agent Builder canvas or custom
+
+00:09:20.712 --> 00:09:22.014
+workspace canvases.
+
+00:09:22.014 --> 00:09:29.025
+Stress two caveats: opening a canvas doesn't replace running tests,
+and secrets never belong on boards.
+
+00:09:29.733 --> 00:09:38.452
+Give attendees this exact blueprint on the left so they see how
+instructions, agents, skills, and hooks coexist cleanly under
+
+00:09:38.452 --> 00:09:39.220
+dot-github.
+
+00:09:39.220 --> 00:09:48.290
+Then trace the subagent context diagram on the right: subagents are
+stateless per invocation and do NOT see your main chat history!
+
+00:09:48.290 --> 00:09:56.984
+That's a feature, not a bug—the Orchestrator must pass a
+self-contained brief with allowed files and acceptance criteria, and
+
+00:09:56.984 --> 00:10:04.147
+the subagent absorbs thousands of tokens of file reads and test
+output, returning only a crisp verdict.
+
+00:10:04.867 --> 00:10:14.156
+Here is the exact hub-and-spoke team learners build in Labs One and
+Two, paired with v2's five collision-protection layers along the
+
+00:10:14.156 --> 00:10:14.648
+bottom!
+
+00:10:14.648 --> 00:10:22.893
+Point out why Chronicle Orchestrator only gets read, search, agent,
+and todo—it structurally cannot write code itself!
+
+00:10:22.893 --> 00:10:32.298
+And emphasize that while subagents isolate context, parallel writers
+in one checkout still collide—so combine worktree isolation, file
+
+00:10:32.298 --> 00:10:38.264
+partitioning, module seams, tool and hook enforcement, and human
+integration testing.
+
+00:10:38.967 --> 00:10:43.418
+Presentation complete—now transition the room into hands-on
+execution!
+
+00:10:43.418 --> 00:10:52.117
+From Slide Twenty-Four onward, keep the relevant lab slide projected
+as a visual anchor while circulating the room and checking concrete
+
+00:10:52.117 --> 00:10:54.419
+pass-fail evidence at each boundary.
+
+00:10:55.133 --> 00:10:58.217
+Set the ground rules before starting the clock.
+
+00:10:58.217 --> 00:11:07.187
+Rule one: everyone must File Open Folder directly on workshop slash
+Advanced slash sampleapp—if they open the repo root instead, VS Code
+
+00:11:07.187 --> 00:11:10.353
+won't discover the workspace agents they create!
+
+00:11:10.353 --> 00:11:14.486
+Rule two: Node twenty-two built-ins only—never run npm install.
+
+00:11:14.486 --> 00:11:17.963
+Rule three: verify every checkpoint before advancing.
+
+00:11:18.667 --> 00:11:21.100
+Start the eight-minute Lab Zero timer.
+
+00:11:21.100 --> 00:11:29.798
+Have learners run node dash-dash-version, node dash-dash-check src
+slash server.js, and node dash-dash-test—expecting ten passing tests
+
+00:11:29.798 --> 00:11:31.924
+and zero failures out of the box.
+
+00:11:31.924 --> 00:11:40.100
+Verify they selected Agent mode on the Copilot harness with a
+frontier model, and distribute the five Foundry Service Principal
+
+00:11:40.100 --> 00:11:44.413
+parameters privately—never display client secrets on the projector!
+
+00:11:45.133 --> 00:11:54.371
+Give ten minutes for the four worker dot-agent-dot-md files, five
+minutes for Chronicle Orchestrator, and two minutes to open Chat:
+
+00:11:54.371 --> 00:11:57.897
+Open Customizations and inspect all five profiles.
+
+00:11:57.897 --> 00:12:07.355
+Walk the room and check two things: Security must ONLY list read and
+search, and Orchestrator must omit edit and execute while setting
+
+00:12:07.355 --> 00:12:08.978
+user-invocable to true.
+
+00:12:08.978 --> 00:12:11.783
+Fix any YAML indent warnings right away.
+
+00:12:12.500 --> 00:12:21.343
+In Lab Two, learners generate four SKILL.md playbooks, verify each
+YAML name matches its folder name, and attach each skill to its
+
+00:12:21.343 --> 00:12:24.132
+specialist worker via skills frontmatter.
+
+00:12:24.132 --> 00:12:33.170
+At minute thirty-eight, have everyone open a fresh chat, type slash
+to see their skills in the menu, and switch the agent dropdown to
+
+00:12:33.170 --> 00:12:37.995
+Chronicle Orchestrator—from here on, they only prompt the
+Orchestrator!
+
+00:12:38.700 --> 00:12:45.996
+Pause for ninety seconds at the forty-minute mark to lock in the
+foundation before hitting Azure APIs.
+
+00:12:45.996 --> 00:12:51.360
+Cold-call these three questions: Why didn't Orchestrator edit files
+itself?
+
+00:12:51.360 --> 00:12:54.007
+Because edit wasn't in its tool list!
+
+00:12:54.007 --> 00:12:56.439
+What loads at startup for a skill?
+
+00:12:56.439 --> 00:12:58.299
+Only name and description!
+
+00:12:58.299 --> 00:13:01.660
+And why hide workers with user-invocable false?
+
+00:13:01.660 --> 00:13:04.450
+Clean UX with full subagent delegation!
+
+00:13:05.167 --> 00:13:14.148
+In Lab Three, learners send one prompt to Chronicle Orchestrator and
+watch it dispatch Developer, Documentation, Security, and Tester!
+
+00:13:14.148 --> 00:13:23.264
+Highlight three coaching points: GET config returns hasClientSecret
+boolean—never the secret; Tester validates Entra OAuth2 and Foundry
+
+00:13:23.264 --> 00:13:31.974
+responses against local node-http mock servers; and when testing
+live credentials, separate Entra token timing from Foundry READY
+
+00:13:31.974 --> 00:13:32.446
+timing.
+
+00:13:32.446 --> 00:13:36.803
+If Azure is unreachable, mocked tests pass and mark live pending.
+
+00:13:37.533 --> 00:13:41.065
+Lab Four is the architectural payoff of the workshop!
+
+00:13:41.065 --> 00:13:49.181
+Orchestrator coordinates building buildSessionDigest and
+chunkSessionDigest—stripping machine-specific workspace prefixes
+
+00:13:49.181 --> 00:13:57.633
+into portable relative paths, running single-pass synthesis for
+short chats or map-reduce chunk digests for huge sessions, and
+
+00:13:57.633 --> 00:14:01.188
+wiring the live progress modal plus popup log viewer.
+
+00:14:01.188 --> 00:14:09.783
+Have learners inspect their generated summaries markdown file and
+verify a teammate on another laptop could continue immediately!
+
+00:14:10.500 --> 00:14:14.017
+Use Lab Five to prove disciplined scope control!
+
+00:14:14.017 --> 00:14:23.145
+Learners give Orchestrator a tight release brief with explicit
+allowed files: generate the PNG and ICO via pure-Node zlib in
+
+00:14:23.145 --> 00:14:29.623
+render-icon.cjs, wire the favicon, pass release-icon.test.js, and
+verify in the browser.
+
+00:14:29.623 --> 00:14:39.190
+Spend the final three minutes on a read-only tour of appsample's
+Electron main and preload files—showing utility-process isolation
+
+00:14:39.190 --> 00:14:46.475
+and why dot-env stays outside installers—without wasting class time
+on gigabyte Electron downloads!
+
+00:14:47.200 --> 00:14:56.551
+Close strong with concrete Monday-morning habits: trim bloated
+copilot-instructions down to non-negotiables, turn one repeated team
+
+00:14:56.551 --> 00:15:05.617
+workflow into a SKILL.md with a sharp trigger description, create
+one read-only security or code-review agent, add a preToolUse
+
+00:15:05.617 --> 00:15:10.757
+guardrail where mistakes hurt, and verify every handoff with real
+tests.
+
+00:15:10.757 --> 00:15:19.200
+Point trainers and attendees to the lab guides, finished appsample
+reference, and video kit—and open the floor for Q&A!

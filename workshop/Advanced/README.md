@@ -17,6 +17,8 @@ Then you will command your **Orchestrator Agent** to build three production-grad
 
 **Presenting or attending?** Open the [Advanced media kit](./content/README.md) for the editable slide decks, captioned explainers, and delivery guidance. The videos are preparation and review material; they do not add time to the 90-minute lab schedule.
 
+**Lab-centered presentation & `gpt-audio-1.5` motion-graphics explainers:** [Advanced Workshop Deck v1.pptx](./Advanced%20Workshop%20Deck%20v1.pptx) (32 editable slides) covers agent surfaces, harnesses & the Agent Host, Markdown control for `.agent.md` & `SKILL.md`, Hooks & Canvases, subagent architecture, and Labs 00–05. Watch the deck with either the [Little Helpers / Fundamental Explainer](./content/v1/Little%20Helpers.mp4) (explained simply as if to a 5-year-old) or the [Train-the-Trainer Explainer](./content/v1/Train%20the%20Trainer.mp4) — see the [v1 deck & video guide](./content/v1/README.md).
+
 | Lab | Topic | Time |
 |---|---|---|
 | **[Lab 00 — Intro, Baseline & Workshop Credentials](./Lab-00-Intro-and-Baseline.md)** | Open `workshop/Advanced/sampleapp`, verify the baseline zero-package app (`node --test`), select a frontier model, and review the shared Foundry Service Principal parameters | **8 min** |
