@@ -1,10 +1,12 @@
 import path from 'node:path';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
 import { discover, loadSession, sessionKey } from './parser.js';
+import { workspaceIdentity, workspaceOverview } from './workspaces.js';
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 4;
+const pricingFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'copilot-pricing.json');
 const indexerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'indexer.js');
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -15,8 +17,14 @@ async function signatureOf(file) {
       file,
       path.join(sessionDir, 'workspace.yaml'),
       path.join(sessionDir, 'vscode.metadata.json'),
-      path.join(sessionDir, 'plan.md')
+      path.join(sessionDir, 'plan.md'),
+      pricingFile
     ];
+    try {
+      const checkpoints = path.join(sessionDir, 'checkpoints');
+      const names = await readdir(checkpoints);
+      parts.push(...names.filter((name) => /\.md$/i.test(name)).sort().map((name) => path.join(checkpoints, name)));
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const stats = await Promise.all(parts.map((part) => stat(part).catch(() => null)));
     if (!stats[0]?.isFile()) throw new Error('Session file is missing.');
     return { size: stats[0].size, signature: stats.map((info) => info ? `${info.size}:${info.mtimeMs}` : '-').join('|') };
@@ -26,8 +34,9 @@ async function signatureOf(file) {
   const parts = [file,
     path.join(root, 'GitHub.copilot-chat', 'transcripts', name + '.jsonl'),
     path.join(root, 'GitHub.copilot-chat', 'debug-logs', name, 'main.jsonl'),
+    path.join(root, 'GitHub.copilot-chat', 'debug-logs', name, 'models.json'),
     path.join(root, 'chatEditingSessions', name, 'state.json'),
-    path.join(root, 'workspace.json')];
+    path.join(root, 'workspace.json'), pricingFile];
   const stats = await Promise.all(parts.map((part) => stat(part).catch(() => null)));
   if (!stats[0]?.isFile()) throw new Error('Session file is missing.');
   return { size: stats[0].size, signature: stats.map((info) => info ? `${info.size}:${info.mtimeMs}` : '-').join('|') };
@@ -53,6 +62,7 @@ export function createLibrary({ cacheDir, maxLoadedBytes = 700_000_000, indexerA
   const entries = new Map();
   const loaded = new Map();
   const loading = new Map();
+  const roots = new Map();
   const queue = [];
   let worker = null;
   let current = null;
@@ -128,13 +138,14 @@ export function createLibrary({ cacheDir, maxLoadedBytes = 700_000_000, indexerA
     pump = (async () => {
       while (queue.length) {
         const entry = queue.shift();
+        if (entries.get(entry.id) !== entry) { done++; continue; }
         current = entry;
         try {
           const result = await indexInWorker(entry);
           if (result.error) Object.assign(entry, { status: 'error', error: result.error, summary: null, corpus: null });
           else Object.assign(entry, { status: 'ready', error: null, summary: result.summary, corpus: result.corpus });
         } catch (error) { Object.assign(entry, { status: 'error', error: error.message }); }
-        await writeCache(entry);
+        if (entries.get(entry.id) === entry) await writeCache(entry);
         done++;
       }
       current = null;
@@ -144,21 +155,29 @@ export function createLibrary({ cacheDir, maxLoadedBytes = 700_000_000, indexerA
     return pump;
   }
 
-  async function addPath(input) {
-    const files = await discover(input);
+  async function addPath(input, { allowEmpty = false, retryErrors = false } = {}) {
+    const files = await discover(input, { allowEmpty });
+    const inspected = [];
+    for (const file of files) {
+      try { inspected.push([file, await signatureOf(file)]); }
+      catch (error) { throw new Error(`Could not inspect ${file}: ${error.message}`); }
+    }
+    roots.set(path.resolve(input), new Set(files.map(sessionKey)));
     const added = [];
     const fresh = [];
-    for (const file of files) {
+    for (const [file, info] of inspected) {
       const id = sessionKey(file);
       let entry = entries.get(id);
-      let info;
-      try { info = await signatureOf(file); } catch { continue; }
-      if (entry && entry.signature === info.signature) { added.push(id); continue; }
+      if (entry && entry.signature === info.signature && !(retryErrors && entry.status === 'error')) { added.push(id); continue; }
       entry = { id, file, ...info, status: 'pending', summary: null, corpus: null, error: null };
       entries.set(id, entry);
       loaded.delete(id);
+      loading.delete(id);
       added.push(id);
-      if (!(await readCache(entry))) fresh.push(entry);
+      if (!(await readCache(entry)) || (retryErrors && entry.status === 'error')) {
+        entry.status = 'pending'; entry.error = null;
+        fresh.push(entry);
+      }
     }
     // Small sessions first, so most of the library becomes searchable quickly.
     fresh.sort((a, b) => a.size - b.size);
@@ -174,7 +193,8 @@ export function createLibrary({ cacheDir, maxLoadedBytes = 700_000_000, indexerA
     let empty = 0;
     for (const entry of entries.values()) {
       if (entry.status === 'ready' && entry.summary?.stats?.prompts === 0) { empty++; continue; }
-      sessions.push({ ...(entry.summary || placeholder(entry)), status: entry.status, error: entry.error || undefined, size: entry.size });
+      const summary = entry.summary || placeholder(entry);
+      sessions.push({ ...summary, workspaceId: workspaceIdentity(summary), status: entry.status, error: entry.error || undefined, size: entry.size });
     }
     return { sessions, empty, indexing: { done, total, active: !!current, current: current ? path.basename(current.file) : null } };
   }
@@ -197,10 +217,12 @@ export function createLibrary({ cacheDir, maxLoadedBytes = 700_000_000, indexerA
       // Release older sessions before parsing a new one so peak memory stays bounded.
       if (entry.size > maxLoadedBytes / 2) loaded.clear(); else evict(id);
       loading.set(id, loadSession(entry.file).then((session) => {
-        loaded.set(id, { session, size: entry.size });
-        evict(id);
+        if (entries.get(id) === entry) {
+          loaded.set(id, { session, size: entry.size });
+          evict(id);
+        }
         return session;
-      }).finally(() => loading.delete(id)));
+      }).finally(() => { if (entries.get(id) === entry || !entries.has(id)) loading.delete(id); }));
     }
     return loading.get(id);
   }
@@ -235,6 +257,22 @@ export function createLibrary({ cacheDir, maxLoadedBytes = 700_000_000, indexerA
   }
 
   const idle = () => pump || Promise.resolve();
+  function retainPaths(paths) {
+    const keep = new Set(paths.map((input) => path.resolve(input)));
+    for (const root of roots.keys()) if (!keep.has(root)) roots.delete(root);
+    const ids = new Set([...roots.values()].flatMap((set) => [...set]));
+    for (const id of entries.keys()) {
+      if (ids.has(id)) continue;
+      entries.delete(id);
+      loaded.delete(id);
+      loading.delete(id);
+    }
+    for (let index = queue.length - 1; index >= 0; index--) {
+      if (!entries.has(queue[index].id)) { queue.splice(index, 1); total--; }
+    }
+  }
   const close = () => { queue.length = 0; worker?.child.kill(); worker = null; };
-  return { addPath, list, getSession, search, idle, close, has: (id) => entries.has(id), get size() { return entries.size; } };
+  return { addPath, retainPaths, list, getSession, search, idle, close,
+    getWorkspace: (id) => workspaceOverview(id, list().sessions),
+    has: (id) => entries.has(id), get size() { return entries.size; } };
 }

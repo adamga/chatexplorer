@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { diffLines } from './diff.js';
 import { collectText, textOf } from './parser.js';
+import { workspaceReport } from './workspaces.js';
 
 const DEFAULT_AUTHORITY_HOST = 'https://login.microsoftonline.com';
 const DEFAULT_TOKEN_SCOPE = 'https://ai.azure.com/.default';
 const DEFAULT_MAX_CHUNK_CHARS = 80_000;
 const MAX_JOBS = 30;
+const LEGACY_WORKSPACE_SUMMARY = /^workspace-[^<>:"/\\|?*\x00-\x1f]+-([a-f0-9]{20})-summary\.md$/;
 
 const ENV_KEY_MAP = [
   ['tenantId', 'AZURE_TENANT_ID'],
@@ -294,15 +296,22 @@ function extractToolResultText(toolNode) {
   }
 
   const output = raw.resultDetails?.output;
+  if (toolNode.resultVariants) {
+    const variants = toolNode.resultVariants;
+    if (variants.modelFacing !== undefined) pieces.push(`Model-facing result: ${variants.modelFacing}`);
+    if (variants.detailed !== undefined) pieces.push(`Detailed display result: ${variants.detailed}`);
+    if (variants.blocks !== undefined) pieces.push(`Structured result blocks: ${collectText(variants.blocks, 3000)}`);
+  }
   if (Array.isArray(output)) {
     const outText = output.map((entry) => textOf(entry)).filter(Boolean).join('\n');
-    if (outText) pieces.push(outText);
+    if (outText && outText !== toolNode.resultVariants?.modelFacing) pieces.push(outText);
   } else if (typeof output === 'string' && output.trim()) {
-    pieces.push(output);
-  } else if (raw.resultDetails && !output) {
+    if (output !== toolNode.resultVariants?.modelFacing) pieces.push(output);
+  } else if (raw.resultDetails && !output && !toolNode.resultVariants) {
     const collected = collectText(raw.resultDetails, 1200);
     if (collected.trim()) pieces.push(collected);
   }
+  if (toolNode.resultVariants && raw.resultDetails?.structuredContent) pieces.push(`Structured result metadata: ${collectText(raw.resultDetails.structuredContent, 1200)}`);
 
   // Check linked sidecar execution events for errors or missing outputs
   for (const eventChild of toolNode.children || []) {
@@ -372,6 +381,14 @@ export function buildSessionDigest(session) {
     `Connected Sources: session=${session.sources?.session || 'yes'}, transcriptEvents=${session.sources?.transcript || 0}, debugEvents=${session.sources?.debug || 0}, editingSnapshots=${Boolean(session.sources?.editing)}, modelCatalog=${Boolean(session.sources?.models)}`,
     `Activity Totals: ${session.stats?.prompts || 0} prompts, ${session.stats?.responses || 0} responses, ${session.stats?.tools || 0} tool calls, ${session.stats?.reasoning || 0} reasoning blocks, ${session.stats?.edits || 0} file edit operations`
   ];
+  if (session.usage?.reported) {
+    const reported = session.usage.reported;
+    headerLines.push(
+      `Runtime-reported consumption: ${reported.nanoAiu ?? 'Unavailable'} nano-AIU (${reported.aiUnits ?? 'Unavailable'} AI units), latest checkpoint at ${isoOrUnknown(reported.timestamp)}. Separate from token-price estimates; not an invoice.`,
+      reported.note || 'Reported checkpoints are cumulative, not additional charges.',
+      ...(reported.warnings || []).map((warning) => `Consumption warning: ${warning}`)
+    );
+  }
 
   if (session.modelTimeline?.length) {
     headerLines.push(
@@ -542,11 +559,14 @@ export function chunkSessionDigest(digest, maxChunkChars = DEFAULT_MAX_CHUNK_CHA
 }
 
 function buildFinalSummaryPrompt(session, digestBody, isSynthesis = false) {
+  const workspace = session.scope === 'workspace';
   return [
     `MODE: FINAL_SESSION_SUMMARY`,
-    `Generate a comprehensive yet token-efficient Markdown handoff summary document (${sanitizeSummaryFileName(session)}) for this VS Code chat session so an engineer or AI coding agent on another machine—with NO prior chat or session history—can ingest it and continue working effectively.`,
+    workspace
+      ? `Generate a repository/workspace-wide Markdown handoff summary for "${session.title}" across ALL ${session.sessionCount} sessions. Keep session IDs and chronology distinct; do not infer that the latest file state in one session supersedes another session or branch. Explain goals, changes, outcomes, unresolved work, models, and recorded usage limitations. An exact usage report is appended separately; do not invent credit totals.`
+      : `Generate a comprehensive yet token-efficient Markdown handoff summary document (${sanitizeSummaryFileName(session)}) for this VS Code chat session so an engineer or AI coding agent on another machine—with NO prior chat or session history—can ingest it and continue working effectively.`,
     `Include all critical context from user prompts, assistant responses, persisted reasoning, tool executions & results, terminal/test outcomes, errors/pitfalls, and reconstructed file changes (using portable repository-relative paths). Avoid unnecessary verbosity or filler prose.`,
-    `Output ONLY valid Markdown starting with "# Session Handoff Summary: ". Do not wrap the entire document in outer triple-backtick fences.`,
+    `Output ONLY valid Markdown starting with "${workspace ? '# Workspace Handoff Summary: ' : '# Session Handoff Summary: '}". Do not wrap the entire document in outer triple-backtick fences.`,
     isSynthesis
       ? `Below are the session metadata, session-wide file snapshots, and chronological multi-part digests covering the entire session:`
       : `Below is the complete structured session digest:`,
@@ -559,7 +579,7 @@ function buildChunkDigestPrompt(session, chunkText, index, total) {
   return [
     `MODE: SESSION_CHUNK_DIGEST (Part ${index} of ${total})`,
     `Session: "${session.title || session.sessionId}"`,
-    `Condense Part ${index} of ${total} of this VS Code chat session into a dense, lossless technical handoff digest (< 1,200 words).`,
+    `Condense Part ${index} of ${total} of this ${session.scope === 'workspace' ? 'workspace across multiple sessions (retain session boundaries, IDs, chronology and conflicting branches)' : 'VS Code chat session'} into a dense, lossless technical handoff digest (< 1,200 words).`,
     `Preserve ALL user instructions/changes, key reasoning insights, exact workspace-relative file paths created/modified/deleted, important tool commands & test/build results, errors encountered & how they were fixed, and unfinished state at the end of this part.`,
     ``,
     chunkText
@@ -781,6 +801,7 @@ export async function invokeFoundryResponses({ target, accessToken, prompt, log,
 export function createSummaryService({
   baseDir,
   getSession,
+  getWorkspace,
   fetchImpl = fetch,
   maxChunkChars = DEFAULT_MAX_CHUNK_CHARS
 }) {
@@ -811,6 +832,74 @@ export function createSummaryService({
     const custom = String(config.outputDir || '').trim();
     if (!custom) return defaultOutputDir;
     return path.isAbsolute(custom) ? custom : path.resolve(baseDir, custom);
+  }
+
+  async function readSavedMetadata(outDir, id) {
+    const legacy = LEGACY_WORKSPACE_SUMMARY.exec(id);
+    if (legacy) {
+      const file = await stat(path.join(outDir, id));
+      return {
+        id, scope: 'workspace', targetId: legacy[1],
+        title: id.slice('workspace-'.length, id.lastIndexOf(`-${legacy[1]}-summary.md`)),
+        fileName: id, generatedAt: file.mtimeMs, legacy: true
+      };
+    }
+    if (!/^[a-f0-9-]{36}$/.test(id)) {
+      const error = new Error('Saved summary not found.');
+      error.status = 404;
+      throw error;
+    }
+    let metadata;
+    try {
+      metadata = JSON.parse(await readFile(path.join(outDir, `${id}.summary.json`), 'utf8'));
+    } catch (error) {
+      if (error.code === 'ENOENT') error.status = 404;
+      throw error;
+    }
+    if (!metadata || metadata.id !== id || !['workspace', 'session'].includes(metadata.scope) ||
+        typeof metadata.targetId !== 'string' || typeof metadata.title !== 'string' ||
+        !Number.isFinite(metadata.generatedAt) || typeof metadata.fileName !== 'string' ||
+        /[<>:"/\\|?*\x00-\x1f]/.test(metadata.fileName) ||
+        metadata.fileName !== path.basename(metadata.fileName) || !metadata.fileName.endsWith('-summary.md')) {
+      throw new Error(`Invalid saved summary metadata: ${id}`);
+    }
+    return metadata;
+  }
+
+  async function listSavedSummaries(targetId, { scope = 'session' } = {}) {
+    const outDir = resolveOutputDir(await loadConfig());
+    let entries;
+    try { entries = await readdir(outDir, { withFileTypes: true }); }
+    catch (error) {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    }
+    const summaries = [];
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const metadataId = /^[a-f0-9-]{36}\.summary\.json$/.test(entry.name)
+        ? entry.name.slice(0, -'.summary.json'.length)
+        : LEGACY_WORKSPACE_SUMMARY.test(entry.name) ? entry.name : null;
+      if (!metadataId) continue;
+      const metadata = await readSavedMetadata(outDir, metadataId);
+      if (metadata.targetId === targetId && metadata.scope === scope) summaries.push(metadata);
+    }
+    return summaries.sort((a, b) => b.generatedAt - a.generatedAt || b.fileName.localeCompare(a.fileName));
+  }
+
+  async function getSavedSummary(id) {
+    const outDir = resolveOutputDir(await loadConfig());
+    try {
+      const metadata = await readSavedMetadata(outDir, id);
+      return { ...metadata, markdown: await readFile(path.join(outDir, metadata.fileName), 'utf8') };
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        const missing = new Error('Saved summary file not found.');
+        missing.status = 404;
+        throw missing;
+      }
+      throw error;
+    }
   }
 
   async function getPublicConfig() {
@@ -994,7 +1083,7 @@ export function createSummaryService({
     return includeMarkdown ? { ...rest, markdown } : rest;
   }
 
-  async function startSummaryJob(sessionId) {
+  async function startSummaryJob(sessionId, { scope = 'session' } = {}) {
     const config = await loadConfig();
     const validation = validateSummaryConfig(config);
     if (!validation.valid) {
@@ -1005,14 +1094,24 @@ export function createSummaryService({
     }
 
     // Verify session exists upfront before launching background job
-    const session = await getSession(sessionId);
-    const fileName = sanitizeSummaryFileName(session);
+    const workspace = scope === 'workspace';
+    const session = workspace ? await getWorkspace(sessionId) : await getSession(sessionId);
+    if (workspace && (session.pendingCount || session.failedCount)) {
+      const error = new Error('All workspace sessions must be indexed successfully before summarizing. Wait for indexing or resolve the listed source errors.');
+      error.status = 409;
+      throw error;
+    }
+    const jobId = randomUUID();
+    const startedAt = Date.now();
+    const generationDate = new Date(startedAt).toISOString().replace(/[:.]/g, '-');
+    const stem = sanitizeSummaryFileName(workspace ? { title: `workspace-${session.title}-${session.id}` } : session).replace(/-summary\.md$/, '');
+    const fileName = `${stem}-${generationDate}-${jobId.slice(0, 8)}-summary.md`;
     const outDir = resolveOutputDir(config);
     const outputPath = path.join(outDir, fileName);
 
-    const jobId = randomUUID();
     const job = {
       id: jobId,
+      scope,
       sessionId: session.id,
       rawSessionId: session.sessionId,
       sessionTitle: session.title || 'Untitled session',
@@ -1022,7 +1121,7 @@ export function createSummaryService({
       phase: 'extracting',
       progress: 5,
       message: 'Extracting prompts, responses, reasoning, tool calls, and file changes...',
-      startedAt: Date.now(),
+      startedAt,
       completedAt: null,
       error: null,
       warningCount: 0,
@@ -1056,7 +1155,23 @@ export function createSummaryService({
         }
 
         const extractStart = Date.now();
-        const digest = buildSessionDigest(session);
+        let digest;
+        if (workspace) {
+          const headerBlock = `=== WORKSPACE METADATA ===\nName: ${session.title}\nPath: ${session.workspacePath}\nSessions: ${session.sessionCount}\nSession order is chronological. Cross-session file states may describe different branches.`;
+          const turnSections = [workspaceReport(session)];
+          for (const [index, member] of session.sessions.entries()) {
+            job.message = `Reading session ${index + 1} of ${session.sessionCount}: ${member.title}`;
+            job.progress = 5 + Math.round(index / session.sessionCount * 10);
+            const loaded = await getSession(member.id);
+            const extracted = buildSessionDigest(loaded);
+            const boundary = `=== SESSION ${index + 1}/${session.sessionCount}: ${member.title} [${member.sessionId}] ===`;
+            turnSections.push(`${boundary}\n${extracted.headerBlock}\n${extracted.snapshotsBlock}`);
+            for (const turn of extracted.turnSections) turnSections.push(`${boundary}\n${turn}`);
+            log('info', 'extract', `Read session ${index + 1}/${session.sessionCount}: ${member.title} (${loaded.requests.length} prompts).`);
+          }
+          const fullText = [headerBlock, ...turnSections].join('\n\n');
+          digest = { headerBlock, snapshotsBlock: '', turnSections, fullText, approxTokens: Math.ceil(fullText.length / 4) };
+        } else digest = buildSessionDigest(session);
         const chunks = chunkSessionDigest(digest, maxChunkChars);
         job.stats = {
           prompts: session.stats?.prompts || 0,
@@ -1067,6 +1182,7 @@ export function createSummaryService({
           approxInputTokens: digest.approxTokens,
           chunks: chunks.length
         };
+        if (workspace) job.stats.sessions = session.sessionCount;
         log(
           'info',
           'extract',
@@ -1159,11 +1275,19 @@ export function createSummaryService({
         job.phase = 'saving';
         job.progress = 94;
         job.message = `Saving ${fileName} to disk...`;
-        const finalMarkdown = cleanMarkdownOutput(rawSummaryText);
+        const finalMarkdown = cleanMarkdownOutput(rawSummaryText) + (workspace ? `\n---\n\n${workspaceReport(session)}` : '');
         await mkdir(outDir, { recursive: true });
         const tempSummary = `${outputPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-        await writeFile(tempSummary, finalMarkdown, 'utf8');
+        await writeFile(tempSummary, finalMarkdown, { encoding: 'utf8', mode: 0o600 });
         await rename(tempSummary, outputPath);
+        const generatedAt = Date.now();
+        const metadata = {
+          id: jobId, scope, targetId: session.id, title: job.sessionTitle, fileName, generatedAt
+        };
+        const metadataPath = path.join(outDir, `${jobId}.summary.json`);
+        const tempMetadata = `${metadataPath}.tmp`;
+        await writeFile(tempMetadata, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
+        await rename(tempMetadata, metadataPath);
 
         job.markdown = finalMarkdown;
         job.stats.outputChars = finalMarkdown.length;
@@ -1171,7 +1295,8 @@ export function createSummaryService({
         job.phase = 'completed';
         job.status = 'completed';
         job.progress = 100;
-        job.completedAt = Date.now();
+        job.completedAt = generatedAt;
+        job.savedSummaryId = jobId;
         job.message = `Summary saved to ${outputPath}`;
         log('info', 'save', `Wrote ${finalMarkdown.length.toLocaleString()} chars (~${job.stats.approxOutputTokens.toLocaleString()} est. tokens) to ${outputPath} in ${job.completedAt - job.startedAt} ms total.`);
       } catch (error) {
@@ -1199,6 +1324,8 @@ export function createSummaryService({
     getPublicConfig,
     saveConfig,
     testConnection,
+    listSavedSummaries,
+    getSavedSummary,
     startSummaryJob,
     getJob
   };

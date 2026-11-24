@@ -321,9 +321,9 @@ test('enforces .env requirement, tests connectivity, runs multi-chunk summary, a
   assert.equal(testResult.replyPreview, 'READY');
   assert.ok((await service.getPublicConfig()).lastTestedAt);
 
-  // 4. Multi-chunk summary job completes, includes reasoning & tool results in prompts, and writes <session-name>-summary.md
+  // 4. Multi-chunk summaries retain dated versions and their source association.
   const started = await service.startSummaryJob(loaded.id);
-  assert.equal(started.fileName, 'Fixture-Task-summary.md');
+  assert.match(started.fileName, /^Fixture-Task-\d{4}-\d{2}-\d{2}T[\d-]+Z-[a-f0-9]{8}-summary\.md$/);
 
   let finalJob = started;
   for (let i = 0; i < 50 && finalJob.status === 'running'; i++) {
@@ -333,7 +333,14 @@ test('enforces .env requirement, tests connectivity, runs multi-chunk summary, a
   assert.equal(finalJob.status, 'completed');
   assert.ok(finalJob.stats.chunks >= 2);
   const writtenMd = await readFile(finalJob.outputPath, 'utf8');
+  assert.equal(path.dirname(finalJob.outputPath), path.join(dir, 'summaries'));
   assert.match(writtenMd, /# Session Handoff Summary: Fixture Task/);
+  const saved = await service.listSavedSummaries(loaded.id);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, finalJob.savedSummaryId);
+  assert.equal(saved[0].scope, 'session');
+  assert.equal((await service.getSavedSummary(saved[0].id)).markdown, writtenMd);
+  assert.deepEqual(await service.listSavedSummaries(loaded.id, { scope: 'workspace' }), []);
   const llmBodies = requestsReceived.filter((r) => r.url.includes('/responses')).map((r) => r.body).join('\n');
   assert.match(llmBodies, /inspect alpha\.js before editing/);
   assert.match(llmBodies, /npm test/);
@@ -352,4 +359,41 @@ test('enforces .env requirement, tests connectivity, runs multi-chunk summary, a
   assert.equal(failedJob.error.includes('super-secret-value'), false);
   assert.ok(failedJob.logs.some((entry) => entry.level === 'error'));
   assert.ok(failedJob.logs.every((entry) => !entry.message.includes('super-secret-value') && !entry.message.includes('mock-access-token-xyz')));
+  assert.equal((await service.listSavedSummaries(loaded.id)).length, 1);
+
+  failAgent = false;
+  await writeFile(path.join(dir, 'not-a-folder'), 'fixture');
+  await service.saveConfig({ outputDir: 'not-a-folder' });
+  const unwritable = await service.startSummaryJob(loaded.id);
+  let unwritableJob = unwritable;
+  for (let i = 0; i < 50 && unwritableJob.status === 'running'; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    unwritableJob = service.getJob(unwritable.id);
+  }
+  assert.equal(unwritableJob.status, 'failed');
+  assert.match(unwritableJob.error, /ENOTDIR|EEXIST/);
+  assert.equal(unwritableJob.savedSummaryId, undefined);
+});
+
+test('saved summary metadata rejects file traversal and supports Unicode filenames and missing storage', async (t) => {
+  const dir = await tempDir(t);
+  const service = createSummaryService({ baseDir: dir });
+  assert.deepEqual(await service.listSavedSummaries('fixture'), []);
+  await assert.rejects(() => service.getSavedSummary('..\\outside.md'), { status: 404 });
+  await assert.rejects(() => service.getSavedSummary('11111111-2222-4333-8444-555555555555'), { status: 404 });
+  const summariesDir = path.join(dir, 'summaries');
+  await mkdir(summariesDir);
+  const id = '11111111-2222-4333-8444-555555555555';
+  const metadata = { id, scope: 'workspace', targetId: 'fixture', title: 'Unicode fixture',
+    fileName: 'workspace-\u00e9tude-2026-11-24-summary.md', generatedAt: Date.now() };
+  await writeFile(path.join(summariesDir, metadata.fileName), '# Unicode workspace\n');
+  const metadataFile = path.join(summariesDir, `${id}.summary.json`);
+  await writeFile(metadataFile, JSON.stringify(metadata));
+  assert.equal((await service.getSavedSummary(id)).markdown, '# Unicode workspace\n');
+  assert.equal((await service.listSavedSummaries('fixture', { scope: 'workspace' })).length, 1);
+  await rm(path.join(summariesDir, metadata.fileName));
+  await assert.rejects(() => service.getSavedSummary(id), { status: 404 });
+  await writeFile(metadataFile, JSON.stringify({ ...metadata, fileName: '..\\outside-summary.md' }));
+  await assert.rejects(() => service.getSavedSummary(id), /Invalid saved summary metadata/);
+  await assert.rejects(() => service.listSavedSummaries('fixture', { scope: 'workspace' }), /Invalid saved summary metadata/);
 });

@@ -26,6 +26,7 @@ You create and own the Microsoft Entra ID Service Principal and the Microsoft Fo
    - **Description:** `Generates compact, comprehensive cross-machine handoff summaries (<session-name>-summary.md) from Chronicle VS Code chat session digests.`
    - **Model:** Select your deployed model (for example `gpt-4.1` or `gpt-5-mini`).
    - **Instructions:** Copy the full system prompt block from [`agent-instructions.md`](./agent-instructions.md) and paste it into the **Instructions** field.
+     For an existing agent such as `sessionsummarizer`, replace its instructions and save a new version; no rename is required. The prompt supports session/workspace scope, reported versus estimated consumption, usage gaps, and separate tool-output variants. It cannot infer usage fields that the application did not include in its digest.
    - **Tools / Knowledge / Actions:** **None required.** Leave all tools disabled — Chronicle extracts all prompts, responses, persisted reasoning, tool calls/results, and reconstructed file diffs locally and supplies them directly in the request input.
    - **Model parameters (if exposed for your chosen model):**
      - **Temperature:** `0.2` (for non-reasoning models; omit/default for reasoning models)
@@ -83,6 +84,7 @@ Assign a least-privilege role so the Service Principal can invoke your Foundry A
    - **Summary Output Folder** (`SUMMARY_OUTPUT_DIR` — optional; defaults to `./summaries`)
 4. Click **Save to `.env`**, then click **Test connection** to verify both Entra ID token acquisition and round-trip agent connectivity.
 5. Open any session from the **Session library**, view **Session overview**, and click **Create session summary** (next to **Read full session**).
+6. Completed summaries are saved automatically in the app-root `summaries` folder (or **Summary Output Folder** override). Each generation has a dated, unique Markdown filename and a `.summary.json` metadata sidecar; keep both to retain its overview association. The workspace/session overview's **View summaries** button reopens saved versions after restart without contacting Foundry. The rich, near-full-screen viewer includes a version selector, **Print**, **Save As...** (Markdown), and **Copy** (Markdown). Installed desktop builds and isolated data directories use their writable application-data root for the default folder.
 
 ---
 

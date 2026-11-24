@@ -8,7 +8,7 @@ test('real session overview, prompt tree, tools, reasoning, diffs, search and ra
   const remote = [];
   page.on('request', (request) => { if (!request.url().startsWith('http://127.0.0.1:3211')) remote.push(request.url()); });
   await page.goto('/');
-  await expect(page.locator('.hero h1')).toHaveText('Every session, one place.');
+  await expect(page.locator('.hero h1')).toHaveText('Session library');
   await expect(page.locator('.session-card')).toHaveCount(1);
   await page.screenshot({ path: '.playwright-mcp\\library-desktop.png' });
   await page.locator('.session-card').first().click();
@@ -50,7 +50,7 @@ test('real session overview, prompt tree, tools, reasoning, diffs, search and ra
   await page.getByRole('tab', { name: 'Before', exact: true }).click();
   await expect(page.locator('.content-panel code')).toHaveText('');
   await page.locator('#models-button').click();
-  await expect(page.locator('.hero h1')).toHaveText('A clear view of every model.');
+  await expect(page.locator('.hero h1')).toHaveText('Model timeline');
   await expect(page.locator('.model-name')).toHaveText('gpt-6.1-sol');
   await page.locator('#search').fill('this-string-does-not-exist-in-the-session-12345');
   await expect(page.locator('.tree-scroll')).toContainText('No matching conversation items.');
@@ -87,9 +87,9 @@ test('import validation, export, same-origin protection and mobile layout', asyn
   await page.locator('#open-button').click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.locator('#path-input').fill('C:\\nonexistent-chronicle-fixture\\missing');
-  await page.locator('#import-submit').click();
+  await page.locator('#check-location').click();
   await expect(page.locator('#import-error')).toContainText('ENOENT');
-  await expect(page.locator('#import-submit')).toBeEnabled();
+  await expect(page.locator('#check-location')).toBeEnabled();
   await page.keyboard.press('Escape');
   const library = await (await request.get('/api/sessions')).json();
   const session = library.sessions[0];
@@ -180,6 +180,6 @@ test('library lists sessions and global search opens the matching session entry'
   await page.keyboard.press('Enter');
   await expect(page.locator('.results-hero p')).toContainText('No matches found');
   await page.locator('#back-to-library').click();
-  await expect(page.locator('.hero h1')).toHaveText('Every session, one place.');
+  await expect(page.locator('.hero h1')).toHaveText('Session library');
   expect(errors).toEqual([]);
 });

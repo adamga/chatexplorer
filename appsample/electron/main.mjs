@@ -67,9 +67,10 @@ async function launch() {
   await startBackend({ dataDir, loadSamples: !app.isPackaged, paths: pathArguments(process.argv) });
 
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  ipcMain.handle('chronicle:pick', async (_event, kind) => {
+  ipcMain.handle('chronicle:pick', async (_event, kind, initialPath) => {
     const isAgent = kind === 'agent-folder' || kind === 'agent-file';
-    let defaultPath = isAgent ? copilotSessionState() : vscodeStorage();
+    let defaultPath = typeof initialPath === 'string' && path.isAbsolute(initialPath) ? initialPath
+      : isAgent ? copilotSessionState() : vscodeStorage();
     try { await stat(defaultPath); } catch {
       const parentPath = path.dirname(defaultPath);
       try { await stat(parentPath); defaultPath = parentPath; } catch { defaultPath = os.homedir(); }
@@ -85,7 +86,7 @@ async function launch() {
             : [{ name: 'Chat sessions', extensions: ['jsonl', 'json', 'vscdb'] }, { name: 'All files', extensions: ['*'] }]
         }
       : {
-          title: isAgent ? 'Open Agent Host / Copilot CLI session-state folder' : 'Open VS Code workspaceStorage folder',
+          title: 'Select a session scan folder',
           defaultPath,
           properties: ['openDirectory']
         });
@@ -94,8 +95,8 @@ async function launch() {
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: '&File', submenu: [
-      { label: 'Open VS Code session…', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('chronicle:open', 'vscode') },
-      { label: 'Open Agent / Copilot CLI sessions…', accelerator: 'CmdOrCtrl+Shift+O', click: () => mainWindow?.webContents.send('chronicle:open', 'agent') },
+      { label: 'Scan locations…', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('chronicle:open', 'vscode') },
+      { label: 'Scan Agent / CLI location…', accelerator: 'CmdOrCtrl+Shift+O', click: () => mainWindow?.webContents.send('chronicle:open', 'agent') },
       { type: 'separator' },
       { role: 'quit', label: 'Exit' }
     ] },

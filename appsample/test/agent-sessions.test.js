@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { discover, loadSession, detailNode, detailNodeAsync, parseWorkspaceYaml } from '../src/parser.js';
+import { discover, loadSession, detailNode, detailNodeAsync, parseWorkspaceYaml, storyPage, buildCorpus } from '../src/parser.js';
 import { createLibrary } from '../src/library.js';
 import { buildSessionDigest } from '../src/summarizer.js';
 
@@ -40,6 +40,53 @@ test('parseWorkspaceYaml parses quoted, escaped, numeric, boolean, and plain fie
   assert.equal(parsed.user_named, false);
   assert.equal(parsed.summary_count, 2);
   assert.equal({}.polluted, undefined);
+});
+
+test('keeps model-facing, detailed and structured tool outputs separate in details, stories, search and summaries', async (t) => {
+  const { save } = await fixture(t);
+  const result = {
+    content: '',
+    detailedContent: 'Expanded terminal output with uniqueDisplayNeedle <img src=x onerror=bad>',
+    contents: [{ type: 'text', text: 'Structured text uniqueBlockNeedle' }, { type: 'resource', uri: 'https://example.invalid/private-resource' }]
+  };
+  const file = await save('output-agent\\events.jsonl', [
+    { type: 'user.message', data: { content: 'Inspect tool variants' } },
+    { type: 'tool.execution_start', data: { toolCallId: 'call', toolName: 'shell', arguments: { command: 'echo example' } } },
+    { type: 'tool.execution_complete', data: { toolCallId: 'call', success: true, result } }
+  ].map(JSON.stringify).join('\n'));
+  const session = await loadSession(file);
+  const tool = session.requests[0].children.find((item) => item.kind === 'tool');
+  assert.equal(tool.resultVariants.modelFacing, '');
+  assert.equal(tool.resultVariants.detailed, result.detailedContent);
+  assert.deepEqual(tool.resultVariants.blocks, result.contents);
+  assert.deepEqual(detailNode(tool).resultVariants, tool.resultVariants);
+  assert.deepEqual(storyPage(session).items.find((item) => item.id === tool.id).resultVariants, tool.resultVariants);
+  const corpus = buildCorpus(session).find(([id]) => id === tool.id)[3];
+  assert.match(corpus, /uniqueDisplayNeedle/);
+  assert.match(corpus, /uniqueBlockNeedle/);
+  const digest = buildSessionDigest(session, { targetTokens: 10000 });
+  assert.match(digest.fullText, /Model-facing result:/);
+  assert.match(digest.fullText, /Detailed display result: Expanded terminal output/);
+  assert.match(digest.fullText, /Structured result blocks:/);
+});
+
+test('classic sidecars enrich tools without losing previously saved output variants', async (t) => {
+  const { save } = await fixture(t);
+  const file = await save('classic\\chatSessions\\variants.json', {
+    sessionId: 'variants', requests: [{ requestId: 'r', message: { text: 'Run a tool' }, response: [{
+      kind: 'toolInvocationSerialized', toolId: 'shell', toolCallId: 'call', resultDetails: { content: 'short', detailedContent: 'original detail', contents: [] }
+    }] }]
+  });
+  await save('classic\\GitHub.copilot-chat\\transcripts\\variants.jsonl', [
+    { type: 'tool.execution_complete', data: { toolCallId: 'call', result: { content: 'updated short' } } },
+    { type: 'session.usage_checkpoint', timestamp: '2026-01-01T00:00:00Z', data: { totalNanoAiu: 0 } }
+  ].map(JSON.stringify).join('\n'));
+  const session = await loadSession(file);
+  const tool = session.requests[0].children.find((item) => item.kind === 'tool');
+  assert.equal(tool.resultVariants.modelFacing, 'updated short');
+  assert.equal(tool.resultVariants.detailed, 'original detail');
+  assert.deepEqual(tool.resultVariants.blocks, []);
+  assert.equal(session.usage.reported.nanoAiu, 0);
 });
 
 test('discovers and parses .copilot/session-state alongside workspaceStorage sessions', async (t) => {

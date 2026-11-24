@@ -51,6 +51,69 @@ test('configuration dialog, connectivity test, session summary creation, progres
     res.end(JSON.stringify({ id: 'resp_e2e_1', status: 'completed', output_text: outputText }));
   });
 
+  test('summary viewer keeps long titles on one line, actions right aligned, and a red close button in the corner', async ({ page }) => {
+    const title = `chatexplorer-${'long-workspace-name-'.repeat(12)}`;
+    const summary = {
+      id: '00000000-0000-4000-8000-000000000001',
+      scope: 'workspace', targetId: 'summary-layout', title,
+      fileName: `workspace-${title}-2026-11-24T16-30-00-000Z-summary.md`,
+      generatedAt: Date.UTC(2026, 10, 24, 16, 30),
+      markdown: '# Workspace handoff\n\nA readable saved summary.'
+    };
+    await page.route('**/api/workspaces/summary-layout/summaries', (route) => route.fulfill({ json: [summary] }));
+    await page.route(`**/api/summary/saved/${summary.id}`, (route) => route.fulfill({ json: summary }));
+    await page.goto('/');
+    await page.evaluate((target) => window.openSavedSummaries(target), {
+      scope: 'workspace', id: 'summary-layout', title
+    });
+    await expect(page.locator('#saved-summary-content h1')).toHaveText('Workspace handoff');
+    await expect(page.locator('#saved-summary-title')).toHaveAttribute('title', `Workspace summary: ${title}`);
+    await expect(page.locator('#saved-summary-filename')).toHaveAttribute('title', summary.fileName);
+    await expect(page.locator('#saved-summary-version option')).not.toContainText(summary.fileName);
+
+    for (const width of [1440, 1280, 768, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const layout = await page.evaluate(() => {
+        const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const singleLine = (selector) => {
+          const element = document.querySelector(selector);
+          return element.clientHeight <= parseFloat(getComputedStyle(element).lineHeight) + 1;
+        };
+        const dialog = rect('#saved-summary-dialog');
+        const toolbar = rect('.summary-viewer-toolbar');
+        const controls = rect('.summary-viewer-controls');
+        const close = rect('.summary-viewer-close');
+        const buttons = [...document.querySelectorAll('[data-summary-viewer-action]')].map((button) => button.getBoundingClientRect());
+        const color = getComputedStyle(document.querySelector('.summary-viewer-close')).color.match(/\d+/g).map(Number);
+        return {
+          titleSingleLine: singleLine('#saved-summary-title'),
+          filenameSingleLine: singleLine('#saved-summary-filename'),
+          actionsRightGap: controls.right - buttons.at(-1).right,
+          buttonsSameRow: buttons.every((button) => Math.abs(button.top - buttons[0].top) < 1),
+          closeRightGap: dialog.right - close.right,
+          closeTopGap: close.top - dialog.top,
+          titleClearsClose: rect('#saved-summary-title').right < close.left,
+          closeIsRed: color[0] > color[1] * 1.3 && color[0] > color[2] * 1.3,
+          toolbarHeight: toolbar.height,
+          noOverflow: document.querySelector('#saved-summary-dialog').scrollWidth <= dialog.width &&
+            document.documentElement.scrollWidth <= innerWidth
+        };
+      });
+      expect(layout.titleSingleLine, `Title at ${width}px`).toBe(true);
+      expect(layout.filenameSingleLine, `Filename at ${width}px`).toBe(true);
+      expect(Math.abs(layout.actionsRightGap)).toBeLessThan(2);
+      expect(layout.buttonsSameRow).toBe(true);
+      expect(layout.closeRightGap).toBeLessThanOrEqual(17);
+      expect(layout.closeTopGap).toBeLessThanOrEqual(17);
+      expect(layout.titleClearsClose).toBe(true);
+      expect(layout.closeIsRed).toBe(true);
+      expect(layout.toolbarHeight).toBeLessThan(230);
+      expect(layout.noOverflow, `Overflow at ${width}px`).toBe(true);
+    }
+    await page.getByRole('button', { name: 'Close summary viewer', exact: true }).click();
+    await expect(page.locator('#saved-summary-dialog')).toBeHidden();
+  });
+
   await new Promise((resolve) => mockFoundry.listen(0, '127.0.0.1', resolve));
   const mockPort = mockFoundry.address().port;
 

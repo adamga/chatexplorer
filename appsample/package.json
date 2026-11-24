@@ -1,6 +1,6 @@
 {
   "name": "chat-explorer",
-  "version": "1.2.0",
+  "version": "1.3.1",
   "private": true,
   "type": "module",
   "description": "A local, read-only observatory for persisted VS Code chat sessions.",
@@ -11,7 +11,7 @@
     "start": "node --max-old-space-size=8192 src/server.js",
     "dev": "node --max-old-space-size=8192 --watch src/server.js",
     "test": "node --test",
-    "check": "node --check src/diff.js && node --check src/parser.js && node --check src/summarizer.js && node --check src/server.js && node --check src/library.js && node --check src/indexer.js && node --check public/icons.js && node --check public/markdown.js && node --check public/app.js && node --check public/log.js && node --check build/render-icon.cjs && node --check electron/main.mjs && node --check electron/preload.cjs && node --check electron/backend.mjs",
+    "check": "node --check src/diff.js && node --check src/parser.js && node --check src/usage.js && node --check src/workspaces.js && node --check src/summarizer.js && node --check src/server.js && node --check src/library.js && node --check src/indexer.js && node --check public/icons.js && node --check public/markdown.js && node --check public/app.js && node --check public/log.js && node --check build/render-icon.cjs && node --check electron/main.mjs && node --check electron/preload.cjs && node --check electron/backend.mjs",
     "desktop": "electron .",
     "icon": "node build/render-icon.cjs",
     "dist": "electron-builder --win nsis --x64",

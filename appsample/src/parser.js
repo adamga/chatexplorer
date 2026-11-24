@@ -3,6 +3,7 @@ import { readFile, readdir, stat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { diffLines } from './diff.js';
+import { createUsageAccounting, compactUsage } from './usage.js';
 
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const isObject = (value) => value !== null && typeof value === 'object';
@@ -233,7 +234,7 @@ export function parseWorkspaceYaml(content) {
   return Object.keys(result).length ? result : null;
 }
 
-export async function discover(input) {
+export async function discover(input, { allowEmpty = false } = {}) {
   const resolved = path.resolve(input);
   const info = await stat(resolved);
   if (info.isFile()) {
@@ -246,7 +247,7 @@ export async function discover(input) {
       throw new Error('Selected workspace.yaml folder does not contain an events.jsonl transcript yet.');
     }
     if (/\.(jsonl|json)$/i.test(resolved)) return [resolved];
-    if (base === 'state.vscdb') return discover(path.dirname(resolved));
+    if (base === 'state.vscdb') return discover(path.dirname(resolved), { allowEmpty });
     throw new Error('Choose a workspace storage folder, a .copilot/session-state folder, or a session .json/.jsonl/workspace.yaml file.');
   }
   const files = [];
@@ -279,7 +280,7 @@ export async function discover(input) {
     }
   }
   await visit(resolved, 0);
-  if (!files.length) throw new Error('No persisted sessions found. Select a workspaceStorage folder, a .copilot\\session-state folder, or a session file directly.');
+  if (!files.length && !allowEmpty) throw new Error('No persisted sessions found. Select a workspaceStorage folder, a .copilot\\session-state folder, or a session file directly.');
   return files;
 }
 
@@ -326,6 +327,20 @@ function toEpochMs(value) {
   if (!value) return undefined;
   const parsed = new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function toolResultVariants(value, source) {
+  const result = parseMaybeJson(value);
+  if (!isObject(result)) return undefined;
+  const modelFacing = typeof result.content === 'string' ? result.content : undefined;
+  const detailed = typeof result.detailedContent === 'string' ? result.detailedContent : undefined;
+  const blocks = Array.isArray(result.contents) ? result.contents : undefined;
+  if (modelFacing === undefined && detailed === undefined && blocks === undefined) return undefined;
+  return {
+    ...(modelFacing !== undefined ? { modelFacing } : {}),
+    ...(detailed !== undefined ? { detailed } : {}),
+    ...(blocks !== undefined ? { blocks } : {}), source
+  };
 }
 
 function cleanObject(obj) {
@@ -378,6 +393,7 @@ async function loadAgentHostSession(file, entries, warnings) {
   }, { source: path.basename(file) });
 
   const requests = [];
+  const accounting = createUsageAccounting(requests);
   const modelTimeline = [];
   let currentModel = startData.selectedModel || 'Not recorded';
   let currentConfig = cleanObject({
@@ -478,6 +494,21 @@ async function loadAgentHostSession(file, entries, warnings) {
       continue;
     }
 
+    if (event.type === 'session.shutdown' || event.type === 'session.usage_checkpoint') {
+      if (!event.checkpoint) accounting.snapshot(data, ts, { source: 'events.jsonl', type: event.type, eventId: event.id, agentId: event.agentId });
+      continue;
+    }
+    if (event.type === 'assistant.usage') {
+      const owner = data.interactionId ? requests.find((request) => request.requestId === data.interactionId) : currentRequest;
+      const usage = accounting.add(owner, data, {
+        source: 'events.jsonl', timestamp: ts, eventId: event.id, agentId: event.agentId, checkpoint: event.checkpoint
+      });
+      if (usage) (owner || overview).children.push(node('event', `Model usage · ${usage.model}`, {
+        type: event.type, data: { model: usage.model, tokens: usage.tokens }
+      }, { timestamp: ts, model: usage.model, usage }));
+      continue;
+    }
+
     if (event.type === 'assistant.message') {
       if (data.model && data.model !== currentModel) {
         currentModel = data.model;
@@ -492,7 +523,16 @@ async function loadAgentHostSession(file, entries, warnings) {
           });
         }
       }
-      if (!currentRequest) continue;
+      const usageOwner = data.interactionId ? requests.find((request) => request.requestId === data.interactionId) : currentRequest;
+      const usage = accounting.add(usageOwner, data, {
+        source: 'events.jsonl', timestamp: ts, eventId: event.id, agentId: event.agentId, checkpoint: event.checkpoint
+      });
+      if (!currentRequest) {
+        if (usage) overview.children.push(node('event', `Model usage · ${usage.model}`, {
+          type: event.type, data: { model: usage.model, tokens: usage.tokens }
+        }, { timestamp: ts, model: usage.model, usage }));
+        continue;
+      }
 
       const rText = typeof data.reasoningText === 'string' ? data.reasoningText : '';
       if (rText.trim() || data.reasoningOpaque) {
@@ -510,9 +550,13 @@ async function loadAgentHostSession(file, entries, warnings) {
           'response',
           titleOf(contentText, 'Assistant response'),
           data,
-          { text: contentText, available: true, model: data.model || currentModel, timestamp: ts }
+          { text: contentText, available: true, model: data.model || currentModel, timestamp: ts, usage }
         ));
         lastResponseText = contentText.trim();
+      } else if (usage) {
+        currentRequest.children.push(node('event', `Model usage · ${usage.model}`, {
+          type: event.type, data: { model: usage.model, tokens: usage.tokens }
+        }, { timestamp: ts, model: usage.model, usage }));
       }
       continue;
     }
@@ -568,6 +612,7 @@ async function loadAgentHostSession(file, entries, warnings) {
       if (!owner) continue;
 
       const parsedResult = parseMaybeJson(data.result);
+      const resultVariants = toolResultVariants(parsedResult, 'events.jsonl');
       let outputText = '';
       if (typeof parsedResult === 'string') outputText = parsedResult;
       else if (isObject(parsedResult)) {
@@ -602,6 +647,7 @@ async function loadAgentHostSession(file, entries, warnings) {
 
       const failed = data.success === false || Boolean(data.error);
       toolNode.failed = failed;
+      toolNode.resultVariants = resultVariants;
       toolNode.duration = open?.startTs && ts ? Math.max(0, ts - open.startTs) : null;
       toolNode.raw.isComplete = true;
       toolNode.raw.completedAt = ts;
@@ -767,6 +813,7 @@ async function loadAgentHostSession(file, entries, warnings) {
     }))
   };
 
+  const usage = accounting.finish();
   return {
     id,
     sessionId,
@@ -782,6 +829,7 @@ async function loadAgentHostSession(file, entries, warnings) {
     firstPrompt: requests[0]?.title || '',
     size: (await stat(file)).size,
     stats,
+    usage,
     warnings,
     modelTimeline,
     overview,
@@ -835,6 +883,7 @@ export async function loadSession(file) {
   }
   const overview = node('overview', session.customTitle || session.title || 'Untitled session', session, { source: path.basename(file) });
   const requests = [];
+  const accounting = createUsageAccounting(requests);
   const tools = new Map();
   const modelTimeline = [];
   let previousModel;
@@ -845,6 +894,7 @@ export async function loadSession(file) {
       hidden: !!request.hiddenFromTranscript, requestId: request.requestId
     });
     requests.push(parent);
+    accounting.add(parent, request, { source: 'Request totals', fallback: true, timestamp: request.timestamp, label: 'Recorded turn total' });
     const model = request.modelId || 'Not recorded';
     if (model !== previousModel) {
       const change = { from: previousModel || null, to: model, timestamp: request.timestamp, prompt: index + 1, configuration: request.modelConfiguration };
@@ -876,6 +926,7 @@ export async function loadSession(file) {
         const tool = node('tool', textOf(part.pastTenseMessage) || textOf(part.invocationMessage) || part.toolId || 'Tool call', part, {
           timestamp: part.startedAt, duration: part.completedAt && part.startedAt ? part.completedAt - part.startedAt : null,
           toolName: part.toolId, model: part.toolSpecificData?.modelName || model,
+          resultVariants: toolResultVariants(part.resultDetails, 'Persisted session'),
           failed: !!part.resultDetails?.isError, hidden: part.presentation === 'hidden'
         });
         if (part.toolCallId) tools.set(part.toolCallId, tool);
@@ -901,9 +952,24 @@ export async function loadSession(file) {
   for (const [records, label] of [[transcript, 'Agent transcript'], [debug, 'Debug log']]) {
     const groups = new Map();
     for (const { value: event, line } of records) {
-      const owner = requestAt(event.timestamp || event.ts);
+      const data = event.data || event.attrs || {};
+      const requestId = data.interactionId || data.requestId;
+      const owner = (requestId ? requests.find((request) => request.requestId === requestId) : null) || requestAt(event.timestamp || event.ts);
+      if (event.type === 'session.shutdown' || event.type === 'session.usage_checkpoint') {
+        if (!event.checkpoint) accounting.snapshot(data, event.timestamp || event.ts, {
+          source: label, type: event.type, eventId: event.id, agentId: event.agentId
+        });
+      }
+      const timestamp = toEpochMs(event.timestamp || event.ts);
+      const usageOwner = requestId ? requests.find((request) => request.requestId === requestId)
+        : requests.filter((request) => Number.isFinite(request.timestamp) && request.timestamp <= timestamp).at(-1);
+      const usage = !String(event.type).startsWith('session.') && (
+        ['assistant.usage', 'assistant.message', 'model.usage'].includes(event.type) || data.usage || data.tokenUsage
+      ) ? accounting.add(usageOwner, data, {
+        source: label, timestamp: event.timestamp || event.ts, eventId: event.id, agentId: event.agentId, checkpoint: event.checkpoint
+      }) : null;
       if (!owner) {
-        overview.children.push(node('event', event.type || 'Event', event, { source: label, line }));
+        overview.children.push(node('event', event.type || 'Event', event, { source: label, line, usage }));
         continue;
       }
       if (!groups.has(owner.id)) {
@@ -911,9 +977,8 @@ export async function loadSession(file) {
         owner.children.push(group);
         groups.set(owner.id, group);
       }
-      const data = event.data || event.attrs || {};
       const eventNode = node('event', `${event.type || 'Event'}${data.toolName ? ` · ${data.toolName}` : ''}`, event, {
-        source: label, line, timestamp: event.timestamp || event.ts, text: textOf(data.content)
+        source: label, line, timestamp: event.timestamp || event.ts, text: textOf(data.content), usage
       });
       groups.get(owner.id).children.push(eventNode);
       if (data.toolCallId && tools.has(data.toolCallId)) {
@@ -921,6 +986,8 @@ export async function loadSession(file) {
         tool.children.push(eventNode);
         if (data.arguments) tool.arguments = data.arguments;
         if (data.success === false) tool.failed = true;
+        const variants = toolResultVariants(data.result, label);
+        if (variants) tool.resultVariants = { ...tool.resultVariants, ...variants };
       }
       for (const toolRequest of data.toolRequests || []) {
         if (!tools.has(toolRequest.toolCallId)) continue;
@@ -1029,7 +1096,7 @@ export async function loadSession(file) {
     workspacePath, workspaceName: workspacePath ? workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1).replace(/\.code-workspace$/i, '') : '',
     lastAt: timestamps.length ? Math.max(...timestamps) : session.lastMessageDate || session.creationDate,
     firstPrompt: requests[0]?.title || '', size: (await stat(file)).size,
-    stats, warnings, modelTimeline, overview, requests, nodes, raw: session,
+    stats, usage: accounting.finish(), warnings, modelTimeline, overview, requests, nodes, raw: session,
     sources: { session: path.basename(file), transcript: transcript.length, debug: debug.length, editing: !!editing, models: !!models }
   };
   return result;
@@ -1038,11 +1105,12 @@ export async function loadSession(file) {
 export function summarizeNode(item) {
   const { id, kind, title, timestamp, model, hidden, index, toolName, failed, source, available, file, duration, epoch } = item;
   return { id, kind, title, timestamp, model, hidden, index, toolName, failed, source, available, file, duration, epoch,
+    usage: compactUsage(item.usage),
     children: item.children.map(summarizeNode) };
 }
 export function summarizeSession(session) {
-  const { id, sessionId, sessionFormat, clientName, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources } = session;
-  return { id, sessionId, sessionFormat, clientName, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources };
+  const { id, sessionId, sessionFormat, clientName, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources, usage } = session;
+  return { id, sessionId, sessionFormat, clientName, title, file, createdAt, lastAt, workspace, workspacePath, workspaceName, firstPrompt, size, stats, warnings, modelTimeline, sources, usage };
 }
 // Compact text used for cross-session search. Node IDs are deterministic for unchanged source files.
 export function buildCorpus(session) {
@@ -1057,7 +1125,7 @@ export function buildCorpus(session) {
     for (const child of request.children) {
       if (child.kind === 'response' || child.kind === 'reasoning') add(child, request.index, child.text);
       else if (child.kind === 'tool') {
-        add(child, request.index, `${child.title}\n${child.toolName || ''}\n${collectText(child.arguments, 4000)}\n${collectText(child.raw?.toolSpecificData, 4000)}\n${collectText(child.raw?.resultDetails, 3000)}`);
+        add(child, request.index, `${child.title}\n${child.toolName || ''}\n${collectText(child.arguments, 4000)}\n${collectText(child.raw?.toolSpecificData, 4000)}\n${collectText(child.raw?.resultDetails, 3000)}\n${collectText(child.resultVariants, 12000)}`);
       } else if (child.kind === 'edit' || child.kind === 'file') add(child, request.index, `${child.title}\n${child.file || ''}`);
       else if (child.kind === 'group' && child.source === 'Edit timeline') {
         for (const edit of child.children) add(edit, request.index, `${edit.title}\n${edit.file || ''}`);
@@ -1071,6 +1139,11 @@ export function detailNode(item) {
   const bounded = boundedRaw(item.raw);
   detail.raw = bounded.value;
   if (bounded.truncated) detail.rawTruncated = true;
+  if (item.resultVariants) {
+    const variants = boundedRaw(item.resultVariants);
+    detail.resultVariants = variants.value;
+    if (variants.truncated) detail.resultVariantsTruncated = true;
+  }
   if (item.before !== undefined && item.after !== undefined) {
     detail.diff = diffLines(item.before, item.after, { timeout: 1500 }) || null;
   }
@@ -1097,7 +1170,7 @@ export function storyPage(session, { parentId, offset = 0, limit = 16 } = {}) {
       if (item.kind !== 'prompt') return detailNode(item);
       // The response is streamed separately; do not repeat it in every prompt header.
       const { response, result, ...metadata } = item.raw;
-      return { ...summarizeNode({ ...item, children: [] }), text: item.text, raw: boundedRaw(metadata, 200000).value };
+      return { ...summarizeNode({ ...item, children: [] }), usage: item.usage, text: item.text, raw: boundedRaw(metadata, 200000).value };
     })
   };
 }

@@ -22,7 +22,7 @@ function contrastRatio(fg, bg) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-test('dual defaulted Open browsers, Agent Host session exploration, session sorting, font sizing & high-contrast light mode', async ({ page }) => {
+test('unified scan locations, workspace drilldown, Agent Host exploration, sorting and light mode', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', (err) => pageErrors.push(err.message));
 
@@ -79,33 +79,26 @@ test('dual defaulted Open browsers, Agent Host session exploration, session sort
 
     await page.goto('/');
 
-    // 1. Verify separate Open browsers both pre-populate with device default locations
     await page.locator('#open-button').click();
     await expect(page.locator('#open-dialog')).toBeVisible();
     const defaultVsCodePath = await page.locator('#path-input').inputValue();
     expect(defaultVsCodePath.toLowerCase()).toContain('workspacestorage');
 
-    // Switch directly to the Agent Host browser and verify its default device path (.copilot\session-state)
-    await page.locator('#open-dialog [data-open-agent]').click();
-    await expect(page.locator('#open-dialog')).toBeHidden();
-    await expect(page.locator('#open-agent-dialog')).toBeVisible();
-    const defaultAgentPath = await page.locator('#agent-path-input').inputValue();
+    await page.locator('#reset-agent-default').click();
+    const defaultAgentPath = await page.locator('#path-input').inputValue();
     expect(defaultAgentPath.toLowerCase()).toContain(path.join('.copilot', 'session-state'));
 
-    // Import Agent Host sessions via the Agent Host dialog
-    await page.locator('#agent-path-input').fill(agentStateDir);
-    await page.locator('#agent-import-submit').click();
-    await expect(page.locator('#open-agent-dialog')).toBeHidden();
-
-    // Import VS Code workspaceStorage session via the VS Code dialog
-    await page.locator('#open-button').click();
+    await page.locator('#path-input').fill(agentStateDir);
+    await page.locator('#check-location').click();
+    await expect(page.locator('#location-check-result')).toContainText('2 session files');
+    await page.locator('#add-location').click();
+    await page.locator('#new-location').click();
     await page.locator('#path-input').fill(wsDir);
+    await page.locator('#check-location').click();
+    await expect(page.locator('#add-location')).toBeEnabled();
+    await page.locator('#add-location').click();
     await page.locator('#import-submit').click();
     await expect(page.locator('#open-dialog')).toBeHidden();
-
-    // Single-session import auto-opens vs-1; wait for it to enter session mode and return to library
-    await expect(page.locator('#back-to-library')).toBeVisible();
-    await page.locator('#back-to-library').click();
 
     const demoGroup = page.locator('.library-group').filter({ hasText: 'sort-demo' });
     await expect(demoGroup.locator('.session-card')).toHaveCount(3);
@@ -167,12 +160,17 @@ test('dual defaulted Open browsers, Agent Host session exploration, session sort
     expect(contrastRatio(metrics.rowMetaColor, metrics.sidebarBg)).toBeGreaterThan(7);
     expect(contrastRatio(metrics.cardTitleColor, metrics.cardBg)).toBeGreaterThan(10);
 
-    // 4. Drill into an Agent Host session and verify reasoning, tool, and edit diff views
-    await demoGroup.locator('.session-card').filter({ hasText: 'Alpha Agent Host Session' }).click();
+    await sidebarDemo.locator('[data-workspace]').click();
+    await expect(page.locator('.workspace-page .hero h1')).toHaveText('sort-demo');
+    await expect(page.locator('.workspace-session-row')).toHaveCount(3);
+    await expect(page.locator('.workspace-page .metric-value').first()).toHaveText('3');
+    await page.locator('.workspace-session-row').filter({ hasText: 'Alpha Agent Host Session' }).click();
     await expect(page.locator('.format-tag')).toHaveText('AGENT HOST');
     await expect(page.locator('.source-list')).toContainText('events.jsonl');
     await page.locator('.tree-row[data-kind="reasoning"]').first().click();
     await expect(page.locator('.content-panel')).toContainText('Thought process for Alpha Agent Host Session');
+    await page.locator('#back-to-library').click();
+    await expect(page.locator('.workspace-session-row')).toHaveCount(3);
 
     // Verify mobile layout has no horizontal overflow
     await page.setViewportSize({ width: 390, height: 844 });

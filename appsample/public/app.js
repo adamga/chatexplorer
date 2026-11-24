@@ -8,15 +8,18 @@ const state = {
   library: [], session: null, nodes: new Map(), parents: new Map(), expanded: new Set(), selected: null,
   filter: 'all', query: '', matches: new Set(), tab: 'readable', detail: null, cache: new Map(), visible: [], searchSequence: 0, loadSequence: 0,
   mode: 'library', view: 'library', libraryFilter: '', collapsedWorkspaces: new Set(), indexing: null, emptySessions: 0,
+  workspace: null, locations: [], scan: null,
+  tips: localStorage.getItem('chronicle-tips') !== 'off',
   results: null, highlight: null, globalSequence: 0,
-  summaryConfig: null, activeSummaryJob: null, sessionSummaries: new Map(),
+  summaryConfig: null, activeSummaryJob: null, sessionSummaries: new Map(), savedSummary: null,
   sortBy: localStorage.getItem('chronicle-sort') || 'date-desc',
   defaultPaths: { vscodeStorage: '', agentSessions: '' }
 };
 let toastTimer;
 let searchTimer;
 let summaryPollTimer;
-let pendingSummarySessionId = null;
+let summaryViewSequence = 0;
+let pendingSummaryTarget = null;
 let recordSequence = 0;
 const records = new Map();
 let storyVersion = 0;
@@ -147,6 +150,10 @@ function setSortOrder(nextSort) {
 }
 async function refreshLibrary() {
   const result = await api('/api/sessions');
+  const completedScan = state.scan?.running && !result.scan?.running;
+  state.scan = result.scan;
+  renderScanStatus();
+  state.locations = result.locations || [];
   if (result.defaultPaths) state.defaultPaths = result.defaultPaths;
   state.library = sortSessions(result.sessions);
   state.indexing = result.indexing;
@@ -160,10 +167,44 @@ async function refreshLibrary() {
   }
   if (state.mode === 'library') $('#session-count').textContent = `${number(state.library.length)} ${state.library.length === 1 ? 'session' : 'sessions'}${state.emptySessions ? ` · ${number(state.emptySessions)} empty hidden` : ''}`;
   clearTimeout(libraryTimer);
-  if (active) libraryTimer = setTimeout(() => refreshLibrary().then(() => {
-    if (state.mode === 'library') { renderLibraryTree(); if (state.view === 'library') renderLibraryPage(false); }
-  }).catch(() => {}), 1500);
-  return result;
+  if (active || state.scan?.running) libraryTimer = setTimeout(() => refreshLibrary().then((next) => {
+    if (next.completedScan || state.scan?.running) return;
+    if (state.mode === 'library') {
+      renderLibraryTree();
+      if (state.view === 'library') renderLibraryPage(false);
+      else if (state.view === 'workspace') {
+        const member = state.library.find((session) => session.workspaceId === state.workspace.id) ||
+          state.library.find((session) => state.workspace.sessions.some((old) => old.id === session.id));
+        if (member) loadWorkspace(member.workspaceId, false);
+        else showLibrary();
+      }
+    }
+  }).catch((error) => {
+    if (state.scan) state.scan.running = false;
+    toast(`Could not refresh local history: ${error.message}`);
+    renderScanStatus(error.message);
+  }), 750);
+  if (completedScan) {
+    toast(state.scan.errors.length ? `Scan finished with ${state.scan.errors.length} issue${state.scan.errors.length === 1 ? '' : 's'}. Open scan status for details.` : `Scan finished: ${state.scan.added} added, ${state.scan.removed} removed, ${state.scan.reindexed} reindexed.`);
+    if (state.mode === 'session') {
+      const id = state.session.id;
+      if (state.library.some((session) => session.id === id)) await loadSession(id);
+      else showLibrary();
+    } else if (state.view === 'workspace') {
+      if (state.library.some((session) => session.workspaceId === state.workspace.id)) await loadWorkspace(state.workspace.id, false);
+      else showLibrary();
+    } else showLibrary();
+  }
+  return { ...result, completedScan };
+}
+function renderScanStatus(error) {
+  const scan = state.scan;
+  $('#scan-button').disabled = !!scan?.running;
+  $('#scan-button-label').textContent = scan?.running ? 'Scanning...' : 'Scan for Updates';
+  $('#scan-status').textContent = error ? 'Refresh failed' : scan?.running ? 'Reading saved locations' : scan?.errors.length ? `Scan issues: ${scan.errors.length}` : scan?.completedAt ? `Scanned ${date(scan.completedAt)}` : 'Scan status';
+  $('#scan-status').classList.toggle('has-errors', !!error || !!scan?.errors.length);
+  $('#scan-result').textContent = error || (scan?.running ? 'Scan in progress. You can continue browsing.' : scan?.completedAt ? `Finished ${date(scan.completedAt)}. ${scan.added} added, ${scan.removed} removed, ${scan.reindexed} reindexed. Unchanged cached sessions are reused.` : 'No manual scan has completed since the app started.');
+  $('#scan-result-errors').textContent = (scan?.errors || []).join('\n\n');
 }
 async function loadLibrary(preferred) {
   await refreshLibrary();
@@ -179,14 +220,20 @@ function setMode(mode) {
   $('#tree-heading-label').textContent = mode === 'library' ? 'SESSIONS' : 'EXPLORER';
   $('#search').placeholder = mode === 'library' ? 'Filter sessions...' : 'Search the entire session...';
   $('#search').value = mode === 'library' ? state.libraryFilter || '' : '';
-  $('#search-scope').querySelector('[value="session"]').disabled = mode === 'library' && !state.session;
+  $('#search-scope').querySelector('[value="session"]').disabled = mode === 'library';
+  if (mode === 'library') $('#search-scope').value = 'all';
+  $('#export-button').title = mode === 'session' ? 'Export reconstructed session JSON' : 'Export workspace usage report';
+  $('#export-button').setAttribute('aria-label', mode === 'session' ? 'Export session' : 'Export workspace usage report');
 }
 function showLibrary() {
   stopStory();
   state.loadSequence++;
+  state.workspace = null;
   setMode('library');
   $('#sidebar-title').textContent = 'Your conversations';
+  $('#sidebar-title').title = '';
   $('#bottom-source').textContent = 'Session library';
+  $('#bottom-source').title = '';
   renderLibraryTree();
   if (!state.library.length) { renderEmpty(); return; }
   renderLibraryPage();
@@ -195,8 +242,9 @@ function workspaces(list = state.library) {
   const groups = new Map();
   for (const session of sortSessions(list)) {
     const name = session.workspaceName || 'Other sessions';
-    if (!groups.has(name)) groups.set(name, { name, path: session.workspacePath, sessions: [] });
-    const group = groups.get(name);
+    const id = session.workspaceId;
+    if (!groups.has(id)) groups.set(id, { id, name, path: session.workspacePath, sessions: [] });
+    const group = groups.get(id);
     if (!group.path && session.workspacePath) group.path = session.workspacePath;
     group.sessions.push(session);
   }
@@ -231,8 +279,8 @@ function renderLibraryTree() {
   const groups = workspaces(list);
   state.visible = [];
   $('#tree-scroll').innerHTML = groups.map((group) => {
-    const open = !state.collapsedWorkspaces.has(group.name) || !!state.libraryFilter;
-    return `<div class="workspace-group${open ? ' open' : ''}"><button class="workspace-row" data-workspace="${escapeHtml(group.name)}" title="${escapeHtml(group.path || group.name)}">${icon(open ? 'chevron-down' : 'chevron-right')}${icon('folder-git-2', 'node-icon')}<span class="tree-title">${escapeHtml(group.name)}</span><span class="node-count">${group.sessions.length}</span></button>
+    const open = !state.collapsedWorkspaces.has(group.id) || !!state.libraryFilter;
+    return `<div class="workspace-group${open ? ' open' : ''}"><div class="workspace-heading"><button class="icon-button" data-workspace-toggle="${group.id}" aria-expanded="${open}" aria-label="${open ? 'Collapse' : 'Expand'} ${escapeHtml(group.name)}">${icon(open ? 'chevron-down' : 'chevron-right')}</button><button class="workspace-row${state.view === 'workspace' && state.workspace?.id === group.id ? ' current' : ''}" data-workspace="${group.id}" title="${escapeHtml(group.path || group.name)}">${icon('folder-git-2', 'node-icon')}<span class="tree-title">${escapeHtml(group.name)}</span><span class="node-count">${group.sessions.length}</span></button></div>
       ${open ? `<div class="workspace-sessions">${group.sessions.map((session) => `<button class="session-row${state.session?.id === session.id ? ' current' : ''}" data-session="${session.id}" title="${escapeHtml(session.firstPrompt || session.title)}"><span class="session-row-title">${escapeHtml(session.title)}</span><span class="session-row-meta">${sessionOriginBadge(session)}${session.lastAt || session.createdAt ? date(session.lastAt || session.createdAt, { year: 'numeric', hour: undefined, minute: undefined }) : ''}${session.stats ? ` · ${number(session.stats.prompts)} ${session.stats.prompts === 1 ? 'prompt' : 'prompts'}` : ''} · ${bytes(session.size)}</span>${sessionStatus(session)}</button>`).join('')}</div>` : ''}</div>`;
   }).join('') || `<div class="empty-state">${state.library.length ? 'No sessions match this filter.' : 'No sessions yet.'}</div>`;
   $('#tree-status').textContent = `${number(list.length)} of ${number(state.library.length)} sessions`;
@@ -257,8 +305,7 @@ function renderLibraryPage(resetScroll = true) {
   const isNameSort = state.sortBy.startsWith('name-');
   const scroll = $('#reader').scrollTop;
   $('#reader').innerHTML = `<article class="reader-inner library-page">
-    <div class="session-eyebrow"><span class="line"></span> YOUR CONVERSATION LIBRARY</div>
-    <div class="hero"><h1>Every session, one place.</h1><p>${number(list.length)} conversations across ${number(workspaces().length)} workspaces. Open VS Code or Agent Host / Copilot CLI sessions to explore and search them together.</p><div class="hero-art"><span class="orbit-dot"></span>${icon('library')}<span class="orbit-dot"></span></div></div>
+    <div class="hero"><h1>Session library</h1><p>${number(list.length)} sessions across ${number(workspaces().length)} workspaces.</p></div>
     ${active ? `<div class="index-card"><div class="index-card-top">${icon('scan-search')}<span>Building the search index · ${number(done)} of ${number(total)} sessions</span><span class="muted">${escapeHtml(state.indexing.current || '')}</span></div><div class="index-bar large"><span style="width:${total ? Math.round((done / total) * 100) : 0}%"></span></div><p class="muted">Sessions open immediately; search covers each session as soon as it is indexed. The index is cached, so this only happens once per change.</p></div>` : ''}
     <div class="metrics">${metric('Sessions', list.length, 'messages-square', `${number(state.emptySessions)} empty hidden`)}${metric('Workspaces', workspaces().length, 'folder-git-2', 'Grouped by folder')}${metric('Prompts', totals.prompts, 'message-square', 'Across all sessions')}${metric('Tool calls', totals.tools, 'terminal', `${bytes(totals.size)} of history`)}</div>
     <div class="library-toolbar" role="region" aria-label="Sort sessions">
@@ -275,12 +322,74 @@ function renderLibraryPage(resetScroll = true) {
         </select>
       </div>
     </div>
-    ${groups.map((group) => `<section class="library-group"><div class="section-title"><h2>${icon('folder-git-2')} ${escapeHtml(group.name)} <span>${group.sessions.length}</span></h2><span class="muted library-path">${escapeHtml(group.path || '')}</span></div><div class="session-cards">
+    ${groups.map((group) => `<section class="library-group"><div class="section-title"><h2><button class="section-link" data-workspace="${group.id}">${icon('folder-git-2')} ${escapeHtml(group.name)} <span>${group.sessions.length}</span></button></h2><span class="muted library-path">${escapeHtml(group.path || '')}</span></div><div class="session-cards">
       ${group.sessions.map((session) => `<button class="session-card${session.status === 'error' ? ' failed' : ''}" data-session="${session.id}"><div class="preview-top"><span class="prompt-chip">${session.stats ? `${number(session.stats.prompts)} ${session.stats.prompts === 1 ? 'PROMPT' : 'PROMPTS'}` : 'INDEXING'}</span>${sessionOriginBadge(session)}<time>${date(session.lastAt || session.createdAt)}</time></div><div class="session-card-title">${escapeHtml(session.title)}</div><div class="preview-text">${escapeHtml(session.firstPrompt || '')}</div><div class="preview-bottom">${session.stats ? `<span>${number(session.stats.tools)} tool calls</span><span>${escapeHtml(modelName(session.modelTimeline?.at(-1)?.to))}</span>` : ''}<span>${bytes(session.size)}</span>${sessionStatus(session)}</div></button>`).join('')}
     </div></section>`).join('') || '<div class="empty-state">No sessions match this filter.</div>'}
   </article>`;
   $('#reader').scrollTop = resetScroll ? 0 : scroll;
   refreshIcons($('#reader'));
+}
+async function loadWorkspace(id, resetScroll = true) {
+  stopStory();
+  const sequence = ++state.loadSequence;
+  const scroll = $('#reader').scrollTop;
+  try {
+    const workspace = await api(`/api/workspaces/${encodeURIComponent(id)}`);
+    if (sequence !== state.loadSequence) return;
+    state.workspace = workspace;
+    state.view = 'workspace';
+    state.selected = null;
+    state.detail = null;
+    records.clear();
+    setMode('library');
+    $('#sidebar-title').textContent = 'Workspaces and sessions';
+    $('#sidebar-title').title = workspace.workspacePath || workspace.title;
+    $('#bottom-source').textContent = workspace.workspacePath || workspace.title;
+    $('#bottom-source').title = workspace.workspacePath || workspace.title;
+    $('#breadcrumb').innerHTML = `Library <span>/</span> ${escapeHtml(workspace.title)}`;
+    $('.rail-button.active')?.classList.remove('active');
+    $('#home-button').classList.add('active');
+    const usage = workspace.usage;
+    const max = Math.max(0, ...workspace.sessions.map((session) => session.usage?.credits || 0));
+    const allModels = [...new Set([...workspace.models, ...usage.modelCredits.map((item) => item.model)])];
+    const color = (model) => `hsl(${(allModels.indexOf(model) * 67 + 90) % 360},55%,55%)`;
+    $('#reader').innerHTML = `<article class="reader-inner workspace-page">
+      <div class="session-eyebrow">WORKSPACE OVERVIEW</div><div class="hero"><h1>${escapeHtml(workspace.title)}</h1></div>
+      <div class="source-path">${escapeHtml(workspace.workspacePath || 'Workspace path not recorded')}</div>
+      <div class="session-meta"><button class="button" data-library>All workspaces</button>${badge(`${workspace.sessionCount} sessions`, 'messages-square')}${badge(`${workspace.stats.models} models`, 'cpu')}
+      <button class="button summary-action-button" data-create-workspace-summary ${workspace.pendingCount || workspace.failedCount ? 'disabled' : ''}>${icon('file-text')} Create workspace summary</button>
+      ${savedSummaryButtonHtml('workspace', workspace.id, workspace.title)}
+      <a class="button" href="/api/workspaces/${workspace.id}/export" download>Download usage report</a>${sessionSummaryLinkHtml(`workspace:${workspace.id}`)}</div>
+      <p class="muted">${workspace.indexedCount}/${workspace.sessionCount} sessions indexed${workspace.pendingCount ? ` · ${workspace.pendingCount} pending` : ''}${workspace.failedCount ? ` · ${workspace.failedCount} failed` : ''}. Statistics include indexed sessions only. Summaries send all sessions in this group to your configured Foundry agent.</p>
+      ${warningsHtml(workspace.warnings)}
+      <div class="metrics">${metric('User prompts', workspace.stats.prompts, 'message-square', 'All indexed sessions')}${metric('Tool calls', workspace.stats.tools, 'terminal', 'All indexed sessions')}${metric('File operations', workspace.stats.edits, 'file-diff', 'Recorded operations')}${metric('Reasoning blocks', workspace.stats.reasoning, 'brain', 'Including unavailable text')}</div>
+      <section class="credit-card"><div class="section-title"><h2>Workspace usage summary</h2>${badge(usage.partial ? 'Incomplete usage' : 'Recorded usage', 'info')}</div>
+      ${keyValues([
+        ['Recorded priced AI credits', creditNumber(usage.credits)], ['Estimated USD cost', usage.usd === null ? 'Unavailable' : `$${creditNumber(usage.usd)}`],
+        ['Priced turns', `${usage.pricedTurns} / ${workspace.stats.prompts}`], ['Recorded usage entries', number(usage.callCount)],
+        ...[['input', 'Input tokens'], ['cached', 'Cached input tokens'], ['cacheWrite', 'Cache-write tokens'], ['output', 'Output tokens'], ['reasoning', 'Reasoning tokens (part of output)']].map(([key, label]) => [label, usage.tokens[key] === null ? 'Not recorded' : number(usage.tokens[key])])
+      ])}
+      ${reportedConsumptionHtml(usage.reported)}
+      <h3>Models across sessions</h3><div class="credit-legend">${allModels.map((model) => `<span><i style="background:${color(model)}"></i>${escapeHtml(modelName(model))}</span>`).join('') || 'No model metadata recorded.'}</div>
+      ${usage.modelCredits.length ? usageTable(usage.modelCredits.map((item) => ({ ...item, label: `${item.callCount} usage entries`, tier: 'Mixed / see sessions' }))) : '<p>No per-call or turn-level usage recorded.</p>'}
+      ${usage.aggregate ? `<details class="story-metadata"><summary>Separate session aggregate snapshots · ${usage.aggregateSessions} sessions</summary><p>${creditNumber(usage.aggregate.credits)} estimated AI credits / ${usage.aggregate.usd === null ? 'Unavailable USD' : `$${creditNumber(usage.aggregate.usd)}`}${usage.aggregate.partial ? ' (incomplete)' : ''}. Latest saved snapshot per session. Overlaps turn usage and is NOT added to the total above; per-call context tiers may be unavailable.</p>${usageTable(usage.aggregate.modelCredits.map((item) => ({ ...item, label: 'Session snapshots', tier: 'Aggregate' })))}</details>` : ''}
+      <p class="footnote">Reference-price estimates, not invoices. Missing usage is not zero. Reasoning is included in output. <a href="${escapeHtml(usage.pricing.source)}" target="_blank" rel="noopener noreferrer">GitHub pricing</a> checked ${escapeHtml(usage.pricing.checkedAt)}. Scan for Updates refreshes local history, not this pricing snapshot.</p></section>
+      <section><div class="section-title"><h2>Sessions <span>${workspace.sessionCount}</span></h2><span class="muted">Chronological · select to drill down</span></div>
+      <div class="credit-chart"><div class="workspace-session-heading"><span>Session / models</span><span>Prompts / tools</span><span>AI credits / USD</span></div>
+      ${workspace.sessions.map((session) => {
+        const cost = session.usage;
+        const label = `${session.title}: ${creditNumber(cost?.credits)} AI credits`;
+        return `<button class="workspace-session-row" data-session="${session.id}" title="${escapeHtml(label)}"><span><strong>${escapeHtml(session.title)}</strong><small>${date(session.lastAt || session.createdAt)} · ${(cost?.modelCredits?.map((item) => modelName(item.model)) || session.modelTimeline?.map((item) => modelName(item.to)) || []).map(escapeHtml).join(', ') || 'Model not recorded'}</small><span class="credit-bar-track" aria-hidden="true">${cost?.credits !== null && cost?.credits !== undefined ? cost.modelCredits.filter((item) => item.credits !== null).map((item) => `<span class="credit-bar-segment" style="width:${max ? item.credits / max * 100 : 0}%;background:${color(item.model)}"></span>`).join('') : '<span class="credit-unavailable">Usage unavailable</span>'}</span>${sessionStatus(session)}</span><span>${session.stats ? `${number(session.stats.prompts)} / ${number(session.stats.tools)}` : 'Not indexed'}</span><span>${creditNumber(cost?.credits)}${cost?.partial ? ' *' : ''}<small>${cost?.usd === null || cost?.usd === undefined ? 'Unavailable USD' : `$${creditNumber(cost.usd)}`}</small></span></button>`;
+      }).join('')}</div></section></article>`;
+    renderLibraryTree();
+    refreshIcons($('#reader'));
+    $('#reader').scrollTop = resetScroll ? 0 : scroll;
+    refreshSavedSummaryButtons();
+  } catch (error) {
+    if (sequence !== state.loadSequence) return;
+    toast(error.message);
+    if (resetScroll) $('#reader').innerHTML = `<div class="empty-state">${escapeHtml(error.message)}<button class="button" data-library>All workspaces</button></div>`;
+  }
 }
 function enterSession() {
   state.view = 'session';
@@ -291,9 +400,10 @@ function enterSession() {
   $('#bottom-source').textContent = state.session.file;
 }
 function renderEmpty() {
-  $('#tree-scroll').innerHTML = '<div class="empty-state">Your next discovery starts here.</div>';
-  $('#reader').innerHTML = `<div class="empty-state">${icon('orbit')}<h2>A new perspective on your conversations.</h2><p>Open saved VS Code workspaceStorage history or Agent Host / Copilot CLI sessions to uncover the messages, tools, models, and edits behind every task.</p><div class="empty-actions"><button class="button primary" data-open>Open VS Code sessions ${icon('arrow-up-right')}</button><button class="button" data-open-agent>${icon('bot')} Open Agent / CLI sessions</button></div></div>`;
-  $('#tree-status').textContent = 'Ready to explore';
+  state.view = 'library';
+  $('#tree-scroll').innerHTML = '<div class="empty-state">No sessions found.</div>';
+  $('#reader').innerHTML = `<div class="empty-state">${icon('folder-open')}<h2>No sessions found</h2><p>Add folders containing VS Code or Agent Host / CLI history.</p><div class="empty-actions"><button class="button primary" data-open>Scan locations</button></div></div>`;
+  $('#tree-status').textContent = 'No sessions';
   refreshIcons();
 }
 async function loadSession(id, { render = true } = {}) {
@@ -314,7 +424,9 @@ async function loadSession(id, { render = true } = {}) {
   }
   if (sequence !== state.loadSequence) return false;
   state.session = session;
+  if (state.workspace && !state.workspace.sessions.some((member) => member.id === id)) state.workspace = null;
   setMode('session');
+  $('#back-to-library').innerHTML = `${icon('arrow-left')} ${state.workspace ? escapeHtml(state.workspace.title) : 'All sessions'}`;
   $('#sidebar-title').textContent = session.title;
   $('#sidebar-title').title = session.workspacePath || session.file;
   state.view = 'session';
@@ -387,6 +499,63 @@ function modelTimelineHtml() {
   return `<div class="model-card">${state.session.modelTimeline.map((item) => `<div class="model-item"><div class="model-name">${escapeHtml(modelName(item.to))}</div><div class="model-desc">${item.from ? 'Switched at' : 'Selected at'} prompt ${String(item.prompt).padStart(2, '0')} · ${date(item.timestamp, { hour: undefined, minute: undefined })}</div><div class="model-config">${Object.entries(item.configuration || {}).map(([key, value]) => `<span>${escapeHtml(humanize(key))}: ${escapeHtml(typeof value === 'object' ? JSON.stringify(value) : numberIfNeeded(value))}</span>`).join('')}</div></div>`).join('') || '<span class="muted">No model metadata was recorded.</span>'}</div>`;
 }
 function numberIfNeeded(value) { return typeof value === 'number' ? number(value) : String(value); }
+function creditNumber(value) {
+  if (value === null || value === undefined) return 'Unavailable';
+  if (value > 0 && value < 0.000001) return '<0.000001';
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 }).format(value);
+}
+function tipBubble(text) {
+  return `<button type="button" class="tip-bubble" data-tip="${escapeHtml(text)}" aria-label="Explanation: ${escapeHtml(text)}">?</button>`;
+}
+function reportedConsumptionHtml(reported) {
+  const units = (value) => value === null || value === undefined ? 'Unavailable' : new Intl.NumberFormat(undefined, { maximumFractionDigits: 9 }).format(value);
+  const workspace = reported?.coveredSessions !== undefined;
+  return `<section class="reported-consumption"><h3>Runtime-reported consumption ${tipBubble('The runtime saves cumulative nano-AIU checkpoints separately from token counts. These totals overlap estimates: never add the two. A checkpoint may predate the final activity, and cannot reconstruct per-turn consumption.')}</h3>
+    ${keyValues([['Reported AI units', units(reported?.aiUnits)], ['Raw nano-AIU', reported?.nanoAiu === null || reported?.nanoAiu === undefined ? 'Not recorded' : number(reported.nanoAiu)],
+      [workspace ? 'Session coverage' : 'Latest saved checkpoint', workspace ? `${reported.coveredSessions} / ${reported.totalSessions}${reported.partial ? ' (incomplete)' : ''}` : reported?.timestamp === null || reported?.timestamp === undefined ? 'Not recorded' : date(reported.timestamp)]])}
+    <p class="muted">1 AI unit = 1,000,000,000 nano-AIU. Shown separately from estimated AI credits; no currency conversion or invoice reconciliation is assumed. Checkpoints may predate final activity and cannot reconstruct missing per-turn consumption.${workspace ? ' Latest checkpoint per covered session only; missing sessions are not zero.' : ''}</p>
+    ${reported?.snapshots?.length ? `<details class="story-metadata"><summary>Saved consumption checkpoints (${reported.snapshots.length})</summary><div class="usage-table-scroll"><table class="usage-table"><thead><tr><th>Saved at</th><th>Event / source</th><th>Nano-AIU</th><th>AI units</th></tr></thead><tbody>${reported.snapshots.map((item) => `<tr><td>${escapeHtml(date(item.timestamp))}</td><td>${escapeHtml(item.type)}<small>${item.sources.map(escapeHtml).join(', ')}</small></td><td>${number(item.nanoAiu)}</td><td>${units(item.aiUnits)}</td></tr>`).join('')}</tbody></table></div><p>These are cumulative snapshots, not additional charges. Only the latest is used.</p></details>` : !workspace ? '<p>No valid runtime consumption checkpoint was saved. Token estimates remain available where counts were recorded.</p>' : ''}
+    ${(reported?.warnings || []).map((warning) => `<p class="usage-warning">${escapeHtml(warning)}</p>`).join('')}</section>`;
+}
+function usageTable(calls) {
+  return `<div class="usage-table-scroll"><table class="usage-table"><caption>Recorded model usage. Input includes cache; reasoning is part of output, not an extra charge.</caption><thead><tr><th>Model / activity</th><th>Input</th><th>Cached</th><th>Cache write</th><th>Output</th><th>Reasoning</th><th>AI credits</th></tr></thead><tbody>${calls.map((call) => `<tr><th scope="row">${escapeHtml(modelName(call.model))}<small>${escapeHtml(call.label || 'Model call')}${call.agent ? ` · Agent ${escapeHtml(call.agent)}` : ''} · ${escapeHtml(call.tier || 'Default')}</small></th>${['input', 'cached', 'cacheWrite', 'output', 'reasoning'].map((key) => `<td>${call.tokens[key] === null ? 'Not recorded' : number(call.tokens[key])}</td>`).join('')}<td>${escapeHtml(creditNumber(call.credits))}${call.partial ? ' *' : ''}</td></tr>${call.components ? `<tr class="usage-components"><td colspan="7">Credit components: ${Object.entries(call.components).map(([key, value]) => `${escapeHtml(humanize(key))} ${escapeHtml(creditNumber(value))}`).join(' + ')}${call.source ? ` · ${escapeHtml(call.source)}` : ''}</td></tr>` : ''}${call.notes?.length ? `<tr class="usage-notes"><td colspan="7">${call.notes.map(escapeHtml).join(' ')}</td></tr>` : ''}`).join('')}</tbody></table></div>`;
+}
+function tokenBubble(usage) {
+  if (!usage) return '';
+  const tokens = usage.tokens;
+  const knownTokens = tokens.input !== null && tokens.output !== null ? `${number(tokens.input + tokens.output)} tokens` : 'Tokens unavailable';
+  const calls = usage.calls || (usage.model ? [usage] : []);
+  return `<details class="token-bubble"><summary>${icon('info')}${knownTokens} · ${escapeHtml(creditNumber(usage.credits))} AI credits${usage.partial ? ' *' : ''}</summary><div class="token-bubble-panel"><strong>Reference-price estimate${usage.partial ? ' · incomplete' : ''}</strong>${keyValues([
+    ['Input tokens (including cache)', tokens.input === null ? 'Not recorded' : number(tokens.input)],
+    ['Output tokens (including reasoning)', tokens.output === null ? 'Not recorded' : number(tokens.output)],
+    ['Cached input / cache write', `${tokens.cached === null ? 'Not recorded' : number(tokens.cached)} / ${tokens.cacheWrite === null ? 'Not recorded' : number(tokens.cacheWrite)}`],
+    ['Reasoning tokens', tokens.reasoning === null ? 'Not recorded' : number(tokens.reasoning)],
+    ['Running attributed subtotal', usage.cumulativeCredits === undefined ? undefined : `${creditNumber(usage.cumulativeCredits)} AI credits${usage.cumulativePartial ? ' (incomplete)' : ''}`],
+    ['Models', (usage.models || [usage.model]).filter(Boolean).map(modelName).join(', ') || 'Not recorded']
+  ])}${calls.length ? usageTable(calls) : '<p>Per-call details are available when inspecting this prompt. No usage is inferred from message text.</p>'}<p>Missing usage is not zero. Cache counts not saved are treated as zero only for the labeled estimate. No legacy model multipliers or plan discounts are applied.</p></div></details>`;
+}
+function creditChartHtml() {
+  const session = state.session;
+  const usage = session.usage;
+  if (!usage) return '';
+  const models = [...new Set(session.requests.flatMap((request) => request.usage?.models.length ? request.usage.models : [request.model]))];
+  const color = (model) => `hsl(${(models.indexOf(model) * 67 + 90) % 360},55%,55%)`;
+  const max = Math.max(0, ...session.requests.map((request) => request.usage?.credits || 0));
+  return `<section class="credit-card"><div class="section-title"><h2>Session usage summary ${tipBubble('Reference prices estimate token costs from a local GitHub pricing snapshot. They are not your invoice. Missing usage, cache counts and context tiers can make estimates incomplete.')}</h2><a class="button" href="/api/sessions/${session.id}/usage/export" download>Download credit report</a></div>${reportedConsumptionHtml(usage.reported)}<div class="credit-summary">${keyValues([
+    ['Recorded priced AI credits', `${creditNumber(usage.credits)}${usage.partial ? ' (incomplete)' : ''}`],
+    ['Turn-attributed subtotal', `${creditNumber(usage.attributedCredits)} AI credits`],
+    ['Estimated USD cost', usage.usd === null ? 'Unavailable' : `$${creditNumber(usage.usd)}`],
+    ['Turns priced / total', `${usage.pricedTurns} / ${usage.totalTurns}`],
+    ['Recorded usage entries', number(usage.callCount)],
+    ...[['input', 'Input tokens'], ['cached', 'Cached input tokens'], ['cacheWrite', 'Cache-write tokens'], ['output', 'Output tokens'], ['reasoning', 'Reasoning tokens (part of output)']].map(([key, label]) => [label, usage.tokens[key] === null ? 'Not recorded' : number(usage.tokens[key])])
+  ])}</div><details class="story-metadata"><summary>Session model subtotals · tokens, costs and credits</summary><div class="usage-table-scroll"><table class="usage-table"><caption>Recorded usage only; unavailable activity is not counted as zero.</caption><thead><tr><th>Model</th><th>Entries</th><th>Input</th><th>Cached</th><th>Cache write</th><th>Output</th><th>AI credits</th><th>USD</th></tr></thead><tbody>${usage.modelCredits.map((item) => `<tr><th scope="row">${escapeHtml(modelName(item.model))}</th><td>${item.callCount}</td>${['input', 'cached', 'cacheWrite', 'output'].map((key) => `<td>${item.tokens[key] === null ? 'Not recorded' : number(item.tokens[key])}</td>`).join('')}<td>${escapeHtml(creditNumber(item.credits))}${item.partial ? ' *' : ''}</td><td>${item.usd === null ? 'Unavailable' : `$${escapeHtml(creditNumber(item.usd))}`}</td></tr>`).join('')}</tbody></table></div></details>${usage.unallocated?.length ? `<details class="story-metadata"><summary>Usage without a turn association · ${usage.unallocated.length} entries</summary><p>Included in the session summary, not assigned to a turn or its running subtotal.</p>${usageTable(usage.unallocated)}</details>` : ''}<h3>AI credits by turn</h3><p class="muted">Reference-price estimates · 1 AI credit = $${usage.pricing.usdPerCredit.toFixed(2)} USD. Bar lengths share one scale; colors identify models.</p><div class="credit-legend">${models.map((model) => `<span><i style="background:${color(model)}"></i>${escapeHtml(modelName(model))}</span>`).join('')}</div><div class="credit-chart"><div class="credit-chart-heading"><span>Turn</span><span>Models / relative consumption</span><span>AI credits / USD</span><span>Running subtotal</span></div>${session.requests.map((request) => {
+    const turn = request.usage;
+    const available = turn?.credits !== null && turn?.credits !== undefined;
+    const names = turn?.models.length ? turn.models : [request.model];
+    const label = `Turn ${request.index}: ${names.map(modelName).join(', ')}; ${creditNumber(turn?.credits)} AI credits; running attributed subtotal ${creditNumber(turn?.cumulativeCredits)}${turn?.cumulativePartial ? ', incomplete' : ''}`;
+    return `<button class="credit-chart-row" data-select="${request.id}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><span>${String(request.index).padStart(2, '0')}</span><span class="credit-bar-cell"><span class="credit-model-label">${names.map((model) => escapeHtml(modelName(model))).join(', ')}</span><span class="credit-bar-track" aria-hidden="true">${available ? (turn.modelCredits || []).filter((item) => item.credits !== null).map((item) => `<span class="credit-bar-segment" style="width:${max ? item.credits / max * 100 : 0}%;background:${color(item.model)}"></span>`).join('') : '<span class="credit-unavailable">Usage or price not recorded</span>'}</span></span><span>${escapeHtml(creditNumber(turn?.credits))}${turn?.partial ? ' *' : ''}<small>${turn?.usd === null || turn?.usd === undefined ? 'Unavailable USD' : `$${escapeHtml(creditNumber(turn.usd))}`}</small></span><span>${escapeHtml(creditNumber(turn?.cumulativeCredits))}${turn?.cumulativePartial ? ' *' : ''}</span></button>`;
+  }).join('') || '<p>No turns recorded.</p>'}</div>${usage.aggregate ? `<details class="story-metadata"><summary>Latest session-wide aggregate · ${escapeHtml(creditNumber(usage.aggregate.credits))} estimated AI credits</summary><p>Saved ${date(usage.aggregate.timestamp)}. Cumulative snapshot, not added to turn costs: it can include activity whose turn or per-call context size was not persisted.</p>${usageTable(usage.aggregate.calls)}</details>` : ''}<p class="footnote">* Missing counts, unknown rates or context tiers make estimates incomplete. Intermediate model calls are itemized in each prompt's token bubble when persisted; tools and reasoning are not charged again separately. Pricing snapshot checked ${escapeHtml(usage.pricing.checkedAt)}. <a href="${escapeHtml(usage.pricing.source)}" target="_blank" rel="noopener noreferrer">GitHub pricing</a>. Scan for Updates refreshes saved session usage, not pricing; this is not a live billing meter or an invoice.</p></section>`;
+}
 function renderOverview(modelsOnly = false) {
   stopStory();
   records.clear();
@@ -400,13 +569,14 @@ function renderOverview(modelsOnly = false) {
   $(modelsOnly ? '#models-button' : '#home-button').classList.add('active');
   const preview = session.requests.slice(0, 5);
   $('#reader').innerHTML = `<article class="reader-inner">
-    <div class="session-eyebrow"><span class="line"></span> ${modelsOnly ? 'THE INTELLIGENCE BEHIND THE CONVERSATION' : 'THE ANATOMY OF A CONVERSATION'}</div>
-    <div class="hero"><h1>${modelsOnly ? 'A clear view of every model.' : escapeHtml(session.title)}</h1><p>${modelsOnly ? 'Model selections and changes, based on the metadata actually recorded in each request.' : 'Go beyond the chat window. Explore every prompt, response, tool call, and file change in one connected history.'}</p><div class="hero-art"><span class="orbit-dot"></span>${icon('fingerprint')}<span class="orbit-dot"></span></div></div>
-    <div class="session-meta"><span>${icon('calendar-days')}${date(session.createdAt, { year: 'numeric', hour: undefined, minute: undefined })}</span><span>${icon('cpu')}${stats.models} ${stats.models === 1 ? 'model' : 'models'}</span>${badge('Read-only source', 'shield-check', true)}<span>${icon('hash')}${escapeHtml(session.sessionId.slice(0, 8))}</span>${!modelsOnly ? `<button class="button primary" data-read-story>${icon('book-open')} Read full session</button><button class="button summary-action-button" id="create-summary-button" data-create-summary>${icon('file-text')} Create session summary</button>${sessionSummaryLinkHtml(session.id)}` : ''}</div>
+    <div class="session-eyebrow">${modelsOnly ? 'RECORDED MODELS' : 'SESSION OVERVIEW'}</div>
+    <div class="hero"><h1>${modelsOnly ? 'Model timeline' : escapeHtml(session.title)}</h1></div>
+    <div class="session-meta"><span>${icon('calendar-days')}${date(session.createdAt, { year: 'numeric', hour: undefined, minute: undefined })}</span><span>${icon('cpu')}${stats.models} ${stats.models === 1 ? 'model' : 'models'}</span>${badge('Read-only source', 'shield-check', true)}<span>${icon('hash')}${escapeHtml(session.sessionId.slice(0, 8))}</span>${!modelsOnly ? `<button class="button primary" data-read-story>${icon('book-open')} Read full session</button><button class="button summary-action-button" id="create-summary-button" data-create-summary>${icon('file-text')} Create session summary</button>${savedSummaryButtonHtml('session', session.id, session.title)}${sessionSummaryLinkHtml(session.id)}` : ''}</div>
     ${warningsHtml(session.warnings)}
     ${modelsOnly ? `${modelTimelineHtml()}<div class="footnote">${icon('info')}Model changes are detected between persisted requests. Internal routing or changes not saved by VS Code cannot be inferred. Tool-specific subagent model metadata is shown on its tool item.</div>` : `
-    <div class="metrics">${metric('User prompts', stats.prompts, 'message-square', 'The starting points')}${metric('Tool calls', stats.tools, 'terminal', 'Actions behind the answers')}${metric('File operations', stats.edits, 'file-diff', 'Persisted editing history')}${metric('Reasoning blocks', stats.reasoning, 'brain', 'Including unavailable text')}</div>
-    <div class="overview-columns"><section><div class="section-title"><h2>Conversation <span>${stats.prompts} prompts</span></h2><button class="section-link" id="browse-prompts">Explore all ${icon('arrow-up-right')}</button></div><div class="activity-card"><div class="activity-header"><span>THE CONVERSATION, UNFOLDED</span>${icon('messages-square')}</div>
+    <div class="metrics">${metric('User prompts', stats.prompts, 'message-square', 'Recorded prompts')}${metric('Tool calls', stats.tools, 'terminal', 'Recorded invocations')}${metric('File operations', stats.edits, 'file-diff', 'Persisted editing history')}${metric('Reasoning blocks', stats.reasoning, 'brain', 'Including unavailable text')}</div>
+    ${creditChartHtml()}
+    <div class="overview-columns"><section><div class="section-title"><h2>Conversation <span>${stats.prompts} prompts</span></h2><button class="section-link" id="browse-prompts">All prompts ${icon('arrow-up-right')}</button></div><div class="activity-card"><div class="activity-header"><span>RECENT PROMPTS</span>${icon('messages-square')}</div>
     ${preview.map((request) => `<button class="prompt-preview" data-select="${request.id}"><div class="preview-top"><span class="prompt-chip">PROMPT ${String(request.index).padStart(2, '0')}</span><time>${date(request.timestamp)}</time></div><div class="preview-text">${escapeHtml(request.title)}</div><div class="preview-bottom"><span>${escapeHtml(modelName(request.model))}</span><span>${request.children.filter((child) => child.kind === 'tool').length} tool calls</span><span>${number(request.children.length)} items</span></div></button>`).join('') || '<div class="empty-state">This session has no persisted prompts.</div>'}
     </div><div class="footnote">${icon('corner-down-right')}Select a prompt in the explorer to follow its story. Everything beneath it belongs to that turn.</div></section>
     <div class="overview-side"><div><div class="section-title"><h2>Model timeline</h2>${badge(`${Math.max(0, session.modelTimeline.length - 1)} switches`, null)}</div>${modelTimelineHtml()}</div>
@@ -414,11 +584,12 @@ function renderOverview(modelsOnly = false) {
     ${session.sessionFormat === 'agent-host'
       ? `${sourceRow('Agent event stream', `events.jsonl (${number(session.sources.transcript)} events)`, true, 'activity')}${sourceRow('Workspace metadata', 'workspace.yaml', !!session.sources.workspaceYaml, 'folder-git-2')}${sourceRow('Recorded file edits', `${number(stats.edits)} operations`, !!session.sources.editing, 'files')}${sourceRow('Model metadata', 'Connected', !!session.sources.models, 'cpu')}${sourceRow('Checkpoints', `${number(session.sources.checkpoints || 0)} saved`, !!session.sources.checkpoints, 'flag')}`
       : `${sourceRow('Persisted session', session.sources.session, true, 'messages-square')}${sourceRow('Agent transcript', `${number(session.sources.transcript)} events`, !!session.sources.transcript, 'activity')}${sourceRow('Editing snapshots', session.sources.editing ? 'Connected' : 'Not found', session.sources.editing, 'files')}${sourceRow('Model catalog', session.sources.models ? 'Connected' : 'Not found', session.sources.models, 'cpu')}${sourceRow('Debug log', `${number(session.sources.debug)} events`, !!session.sources.debug, 'scan-line')}`}</div></div></div></div>
-    <hr class="section-divider"><div class="section-title"><h2>Your data stays where it belongs.</h2>${badge('100% local', 'hard-drive', true)}</div><div class="footnote">${icon('lock-keyhole')}Original files are never modified, recorded tools are never executed, and remote images are never fetched. Unavailable reasoning and missing sources are labeled, not guessed.</div><div class="source-path">${escapeHtml(session.file)}</div>`}
+    <hr class="section-divider"><div class="section-title"><h2>Source file</h2>${badge('Read-only', 'hard-drive', true)}</div><div class="source-path">${escapeHtml(session.file)}</div>`}
     </article>`;
   $('#reader').scrollTop = 0;
   renderTree();
   refreshIcons($('#reader'));
+  refreshSavedSummaryButtons();
 }
 function sourceRow(label, value, available, name) {
   return `<div class="source-row">${icon(name)}<span>${label}</span><span class="source-value${available ? '' : ' unavailable'}">${available ? (label === 'Persisted session' ? '.json / .jsonl' : escapeHtml(value)) : 'Not found'}</span></div>`;
@@ -467,7 +638,7 @@ function renderDetail() {
     : [[ 'readable', item.kind === 'prompt' ? 'Conversation story' : 'Readable'], ['raw', 'Raw record']];
   const title = item.kind === 'prompt' ? `Prompt ${String(prompt?.index || item.index).padStart(2, '0')}` :
     item.kind === 'response' ? 'Assistant response' : item.kind === 'reasoning' ? 'Recorded reasoning' : item.title;
-  $('#reader').innerHTML = `<article class="reader-inner"><header class="detail-header"><div class="detail-symbol">${icon(icons[item.kind] || 'activity')}</div><div><div class="detail-kicker">${escapeHtml(item.kind === 'prompt' ? 'USER MESSAGE' : humanize(item.kind))}${prompt && item.kind !== 'prompt' ? ` / PROMPT ${String(prompt.index).padStart(2, '0')}` : ''}</div><h1>${escapeHtml(title)}</h1><div class="detail-meta">${item.model || prompt?.model ? badge(modelName(item.model || prompt?.model), 'cpu', true) : ''}${badge(item.source, 'database')}${item.timestamp ? badge(date(item.timestamp), 'clock-3') : ''}${item.duration !== undefined && item.duration !== null ? badge(duration(item.duration), 'timer') : ''}${item.hidden ? badge('Hidden in original transcript', 'eye-off') : ''}${item.failed ? badge('Tool reported an error', 'triangle-alert') : ''}</div></div></header>
+  $('#reader').innerHTML = `<article class="reader-inner"><header class="detail-header"><div class="detail-symbol">${icon(icons[item.kind] || 'activity')}</div><div><div class="detail-kicker">${escapeHtml(item.kind === 'prompt' ? 'USER MESSAGE' : humanize(item.kind))}${prompt && item.kind !== 'prompt' ? ` / PROMPT ${String(prompt.index).padStart(2, '0')}` : ''}</div><h1>${escapeHtml(title)}</h1><div class="detail-meta">${item.model || prompt?.model ? badge(modelName(item.model || prompt?.model), 'cpu', true) : ''}${badge(item.source, 'database')}${item.timestamp ? badge(date(item.timestamp), 'clock-3') : ''}${item.duration !== undefined && item.duration !== null ? badge(duration(item.duration), 'timer') : ''}${item.hidden ? badge('Hidden in original transcript', 'eye-off') : ''}${item.failed ? badge('Tool reported an error', 'triangle-alert') : ''}</div>${tokenBubble(item.usage)}</div></header>
     <div class="detail-tabs" role="tablist">${tabs.map(([key, label]) => `<button class="detail-tab${state.tab === key ? ' active' : ''}" role="tab" aria-selected="${state.tab === key}" data-tab="${key}">${label}</button>`).join('')}<button class="icon-button" id="copy-item" title="Copy current item" aria-label="Copy current item">${icon('copy')}</button></div>
     <div class="content-panel" role="tabpanel">${state.tab === 'raw' ? `${item.rawTruncated ? `<div class="footnote">${icon('scissors')}This record is very large, so the preview is shortened. Long strings and lists are trimmed and marked; the source file is unchanged.</div>` : ''}${codeBlock(JSON.stringify(item.raw, null, 2), 'json', 'Original persisted record · JSON')}` :
       state.tab === 'before' || state.tab === 'after' ? codeBlock(item[state.tab], languageFor(item.file), `${state.tab === 'before' ? 'Before' : 'After'} · ${item.file}`) : renderReadable(item)}</div>
@@ -490,7 +661,16 @@ function languageFor(file = '') {
   return ({ js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', json: 'json', css: 'css', html: 'xml', md: 'markdown', py: 'python', ps1: 'powershell', yml: 'yaml', yaml: 'yaml', sh: 'bash' })[ext] || '';
 }
 function keyValues(entries) {
-  return `<dl class="key-values">${entries.filter(([, value]) => value !== undefined && value !== null).map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl>`;
+  const tips = {
+    'Recorded priced AI credits': 'A reference-price estimate from saved usage and the local GitHub pricing file, not reported consumption or an invoice.',
+    'Input tokens': 'Input includes cached input. The estimate charges cached and uncached portions at their respective rates without counting them twice.',
+    'Cached input tokens': 'Previously processed input reused by the model. Missing cache counts are unknown, not evidence that no caching occurred.',
+    'Cached input / cache write': 'Cache reads reuse prior context; cache writes save context. Each has a separate rate when the model pricing specifies one.',
+    'Reasoning tokens': 'Reasoning tokens are already part of output tokens. They are not charged a second time.',
+    'Reasoning tokens (part of output)': 'Reasoning is included in output totals. A saved count does not guarantee that readable reasoning text was persisted.',
+    'Running attributed subtotal': 'Running total of priced calls associated with this turn and earlier turns. Session-only usage is excluded and missing calls cannot be inferred.'
+  };
+  return `<dl class="key-values">${entries.filter(([, value]) => value !== undefined && value !== null).map(([key, value]) => `<dt>${escapeHtml(key)}${tips[key] ? tipBubble(tips[key]) : ''}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl>`;
 }
 function relatedItems(id) {
   const children = state.nodes.get(id)?.children || [];
@@ -504,7 +684,7 @@ function renderReadable(item) {
       ['Model', item.model], ['Agent', raw.agent?.fullName || raw.agent?.name], ['Mode', raw.modeInfo?.name || raw.modeInfo?.kind],
       ['Input tokens', raw.promptTokens === undefined ? undefined : number(raw.promptTokens)], ['Output tokens', raw.completionTokens === undefined ? undefined : number(raw.completionTokens)],
       ['Elapsed', raw.elapsedMs === undefined ? undefined : duration(raw.elapsedMs)], ['Request ID', raw.requestId]
-    ])}${raw.modelConfiguration ? `<div class="tool-section"><h3>Model configuration</h3>${renderRecord(raw.modelConfiguration)}</div>` : ''}</details><div class="story-divider"><span>THE CONVERSATION CONTINUES</span></div><div id="prompt-story" class="story-stream"></div>`;
+    ])}${raw.modelConfiguration ? `<div class="tool-section"><h3>Model configuration</h3>${renderRecord(raw.modelConfiguration)}</div>` : ''}</details><div class="story-divider"><span>TURN ACTIVITY</span></div><div id="prompt-story" class="story-stream"></div>`;
   }
   if (item.kind === 'response') return markdown(item.text);
   if (item.kind === 'reasoning') {
@@ -526,18 +706,33 @@ function renderReadable(item) {
   }
   return renderRecord(item.raw);
 }
+function toolOutputsHtml(item) {
+  const variants = item.resultVariants;
+  if (!variants) return '';
+  return `${item.resultVariantsTruncated ? '<p class="usage-warning">Saved output exceeds the preview limit. Some content shown below is truncated.</p>' : ''}
+    ${variants.modelFacing !== undefined ? `<div class="tool-section"><h3>Model-facing result ${tipBubble('result.content is the concise result sent to the model. The runtime may truncate it. It is not necessarily the complete tool output.')}</h3>${codeBlock(variants.modelFacing, '', variants.modelFacing === '' ? 'Saved empty string' : 'result.content')}</div>` : ''}
+    ${variants.detailed !== undefined ? `<details class="tool-section"><summary>Saved detailed display output</summary><p>${tipBubble('result.detailedContent is display-oriented output saved by the runtime. It can contain more than the model-facing result, but is not guaranteed to be complete.')} Separate from the model-facing result.</p>${codeBlock(variants.detailed, '', variants.detailed === '' ? 'Saved empty string' : 'result.detailedContent')}</details>` : ''}
+    ${variants.blocks !== undefined ? `<details class="tool-section"><summary>Structured result blocks (${variants.blocks.length})</summary><p>${tipBubble('result.contents preserves structured text, terminal, image, audio and resource blocks. References are inspected as saved data; Chronicle does not fetch files or remote resources.')} Saved structured data; referenced resources are not loaded.</p>${renderRecord(variants.blocks)}</details>` : ''}`;
+}
 function renderTool(item, inline = false) {
   const raw = item.raw;
   const specific = raw.toolSpecificData || {};
   const command = specific.commandLine?.original || (typeof specific.commandLine === 'string' ? specific.commandLine : null);
   const result = raw.resultDetails;
   const output = result?.output;
+  const duplicateOutput = item.resultVariants?.modelFacing !== undefined &&
+    (typeof output === 'string' || (Array.isArray(output) && output.every((entry) => typeof entry === 'string' || entry?.isText))) &&
+    textOf(output) === item.resultVariants.modelFacing;
+  const metadata = { ...result };
+  delete metadata.output;
+  if (item.resultVariants) { delete metadata.content; delete metadata.detailedContent; delete metadata.contents; }
   return `${raw.invocationMessage ? markdown(textOf(raw.pastTenseMessage) || textOf(raw.invocationMessage)) : ''}
     ${inline ? '' : keyValues([['Tool', raw.toolId], ['Call ID', raw.toolCallId], ['Status', item.failed ? 'Reported error' : raw.isComplete ? 'Completed' : 'Completion not recorded'], ['Duration', item.duration === null ? undefined : duration(item.duration)], ['Source', raw.source?.label]])}
     ${command ? `<div class="tool-section"><h3>Terminal command</h3>${codeBlock(command, specific.language === 'pwsh' ? 'powershell' : 'bash')}</div>` : ''}
     ${item.arguments !== undefined ? `<div class="tool-section"><h3>Tool input</h3>${codeBlock(typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments, null, 2), typeof item.arguments === 'object' ? 'json' : '')}</div>` : ''}
-    ${output ? `<div class="tool-section"><h3>Tool output</h3>${Array.isArray(output) ? output.map((entry) => entry.isText || typeof entry === 'string' ? codeBlock(textOf(entry), '', 'Recorded output') : renderRecord(entry)).join('') : codeBlock(typeof output === 'string' ? output : JSON.stringify(output, null, 2))}</div>` : ''}
-    ${result ? `<div class="tool-section"><h3>Result details</h3>${inline ? renderStoryContext(result) : renderRecord(result)}</div>` : inline ? '' : '<div class="footnote">' + icon('info') + 'No separate result payload was persisted for this tool. Related events may provide additional context.</div>'}
+    ${toolOutputsHtml(item)}
+    ${!duplicateOutput && output !== undefined && output !== null ? `<div class="tool-section"><h3>Recorded tool output ${tipBubble('The saved format does not identify this as model-facing, detailed or structured output. Its completeness is unknown.')}</h3>${Array.isArray(output) ? output.map((entry) => entry?.isText || typeof entry === 'string' ? codeBlock(textOf(entry), '', 'Recorded output') : renderRecord(entry)).join('') : codeBlock(typeof output === 'string' ? output : JSON.stringify(output, null, 2))}</div>` : ''}
+    ${Object.keys(metadata).length ? `<details class="tool-section"><summary>Result metadata</summary>${renderRecord(metadata)}</details>` : !result && !item.resultVariants && !inline ? '<div class="footnote">' + icon('info') + 'No separate result payload was persisted for this tool. Related events may provide additional context.</div>' : ''}
     ${specific.kind === 'subagent' ? `<div class="tool-section"><h3>Subagent prompt</h3>${markdown(specific.prompt || '(Not recorded)')}<h3>Subagent result</h3>${markdown(specific.result || '(Not recorded)')}</div>` : ''}
     ${Object.keys(specific).length ? `<${inline ? 'details' : 'div'} class="tool-section">${inline ? '<summary>Additional tool metadata</summary>' : '<h3>Tool-specific data</h3>'}${renderRecord(specific)}</${inline ? 'details' : 'div'}>` : ''}${inline ? '' : relatedItems(item.id)}`;
 }
@@ -581,7 +776,7 @@ function renderStoryItem(item) {
   } else if (item.kind === 'context' || item.kind === 'event') {
     contents = renderStoryContext(item.raw);
   } else contents = renderReadable(item);
-  return `<section class="story-item story-${item.kind}" data-story-item="${item.id}"><header class="story-item-header"><span class="story-speaker">${icon(icons[item.kind] || 'activity')}${escapeHtml(label)}</span>${item.kind === 'prompt' && item.model ? badge(modelName(item.model), 'cpu', true) : ''}${item.timestamp ? `<time>${date(item.timestamp)}</time>` : ''}${item.failed ? badge('Reported error', 'triangle-alert') : ''}<button class="icon-button story-inspect" data-select="${item.id}" title="Inspect original record" aria-label="Inspect original record">${icon('scan-line')}</button></header>${contents}</section>`;
+  return `<section class="story-item story-${item.kind}" data-story-item="${item.id}"><header class="story-item-header"><span class="story-speaker">${icon(icons[item.kind] || 'activity')}${escapeHtml(label)}</span>${item.kind === 'prompt' && item.model ? badge(modelName(item.model), 'cpu', true) : ''}${item.timestamp ? `<time>${date(item.timestamp)}</time>` : ''}${item.failed ? badge('Reported error', 'triangle-alert') : ''}<button class="icon-button story-inspect" data-select="${item.id}" title="Inspect original record" aria-label="Inspect original record">${icon('scan-line')}</button></header>${tokenBubble(item.usage)}${contents}</section>`;
 }
 function mountStory(container, endpoint, version) {
   if (!container) return;
@@ -590,7 +785,7 @@ function mountStory(container, endpoint, version) {
   let finished = false;
   const sentinel = document.createElement('div');
   sentinel.className = 'story-sentinel';
-  sentinel.innerHTML = '<span class="spinner"></span><span>Unfolding the next part of the story...</span>';
+  sentinel.innerHTML = '<span class="spinner"></span><span>Loading recorded items...</span>';
   container.append(sentinel);
   const observer = new IntersectionObserver((entries) => {
     if (entries.some((entry) => entry.isIntersecting)) load();
@@ -639,14 +834,14 @@ function renderSessionStory() {
   $('.rail-button.active')?.classList.remove('active');
   $('#story-button').classList.add('active');
   $('#breadcrumb').innerHTML = 'Sessions <span>/</span> Full session story';
-  $('#reader').innerHTML = `<article class="reader-inner story-reader"><div class="session-eyebrow"><span class="line"></span> THE COMPLETE CONVERSATION</div><div class="hero"><h1>${escapeHtml(state.session.title)}</h1><p>Read it as it unfolded. Every prompt, reply, saved thought, summary, and tool activity, together in one continuous story.</p></div><div class="session-meta">${badge(`${state.session.stats.prompts} prompts`, 'messages-square', true)}${badge('Chronological reading', 'book-open')}<span>More appears automatically as you scroll.</span></div>${warningsHtml(state.session.warnings)}<div id="session-story" class="story-stream"></div></article>`;
+  $('#reader').innerHTML = `<article class="reader-inner story-reader"><div class="session-eyebrow">FULL SESSION</div><div class="hero"><h1>${escapeHtml(state.session.title)}</h1></div><div class="session-meta">${badge(`${state.session.stats.prompts} prompts`, 'messages-square', true)}${badge('Chronological', 'book-open')}<span>Items load as you scroll.</span></div>${warningsHtml(state.session.warnings)}<div id="session-story" class="story-stream"></div></article>`;
   $('#reader').scrollTop = 0;
   renderTree(); refreshIcons($('#reader'));
   mountStory($('#session-story'), `/api/sessions/${state.session.id}/story`, storyVersion);
 }
 
 function moveSelection(direction) {
-  if (!state.visible.length) return;
+  if (state.mode !== 'session' || !state.visible.length) return;
   const index = state.visible.indexOf(state.selected);
   const next = index < 0 ? 0 : Math.max(0, Math.min(state.visible.length - 1, index + direction));
   selectNode(state.visible[next]);
@@ -743,25 +938,58 @@ async function openResult(sessionId, nodeId, promptIndex) {
   await selectNode(target);
   $('#tree-scroll').querySelector(`[data-node="${target}"]`)?.scrollIntoView({ block: 'center' });
 }
-function openDialog() {
-  if ($('#open-agent-dialog')?.open) $('#open-agent-dialog').close();
+let locationDraft = [];
+let selectedLocation = -1;
+let checkedLocation = null;
+let folderListing = null;
+let locationSequence = 0;
+function resetLocationCheck() {
+  locationSequence++;
+  checkedLocation = null;
+  $('#add-location').disabled = true;
+  $('#location-check-result').textContent = '';
+  $('#add-location').textContent = selectedLocation < 0 ? 'Add location' : 'Update location';
+}
+function setLocationPath(value) {
+  $('#path-input').value = value;
+  resetLocationCheck();
+}
+function renderLocations() {
+  $('#scan-location-list').innerHTML = locationDraft.map((input, index) => `<div class="scan-location-row${selectedLocation === index ? ' selected' : ''}"><button type="button" class="location-remove icon-button" data-remove-location="${index}" aria-label="Remove ${escapeHtml(input)}" title="Remove location">${icon('x')}</button><button type="button" class="location-select" data-location="${index}" title="${escapeHtml(input)}">${escapeHtml(input)}</button></div>`).join('') || '<p class="muted">No scan locations. Add a location above.</p>';
+  refreshIcons($('#scan-location-list'));
+}
+function openDialog(source = 'vscode') {
+  if ($('#open-dialog').open) return;
   $('#import-error').textContent = '';
-  if (!$('#path-input').value.trim() && state.defaultPaths.vscodeStorage) {
-    $('#path-input').value = state.defaultPaths.vscodeStorage;
-  }
-  if (!$('#open-dialog').open) $('#open-dialog').showModal();
+  locationDraft = [...state.locations];
+  selectedLocation = -1;
+  setLocationPath(source === 'agent' ? state.defaultPaths.agentSessions : state.defaultPaths.vscodeStorage);
+  $('#folder-browser').hidden = true;
+  renderLocations();
+  $('#open-dialog').showModal();
   $('#path-input').focus();
   $('#path-input').select();
 }
-function openAgentDialog() {
-  if ($('#open-dialog')?.open) $('#open-dialog').close();
-  $('#agent-import-error').textContent = '';
-  if (!$('#agent-path-input').value.trim() && state.defaultPaths.agentSessions) {
-    $('#agent-path-input').value = state.defaultPaths.agentSessions;
+function openAgentDialog() { openDialog('agent'); }
+async function browseLocation(input = $('#path-input').value.trim()) {
+  const sequence = ++locationSequence;
+  $('#import-error').textContent = '';
+  try {
+    const listing = await api(`/api/folders?path=${encodeURIComponent(input)}`);
+    if (sequence !== locationSequence) return;
+    folderListing = listing;
+    setLocationPath(listing.path);
+    $('#folder-browser').hidden = false;
+    $('#folder-current').textContent = listing.path;
+    $('#folder-drive').innerHTML = listing.drives.map((drive) => `<option${listing.path.toLowerCase().startsWith(drive.toLowerCase()) ? ' selected' : ''}>${escapeHtml(drive)}</option>`).join('');
+    $('#folder-children').innerHTML = listing.directories.map((entry, index) => `<button type="button" class="folder-child" data-folder-index="${index}">${icon('folder-open')}${escapeHtml(entry.name)}</button>`).join('') || '<p class="muted">No subfolders. The current directory is selected above.</p>';
+    refreshIcons($('#folder-children'));
+  } catch (error) {
+    if (sequence === locationSequence) {
+      $('#folder-browser').hidden = true;
+      $('#import-error').textContent = `Could not browse this directory: ${error.message}`;
+    }
   }
-  if (!$('#open-agent-dialog').open) $('#open-agent-dialog').showModal();
-  $('#agent-path-input').focus();
-  $('#agent-path-input').select();
 }
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('button, [data-node], [data-toggle], [data-open-job-log]');
@@ -773,11 +1001,31 @@ document.addEventListener('click', async (event) => {
     renderTree();
     return;
   }
+  if (target.dataset.removeLocation !== undefined) {
+    const index = Number(target.dataset.removeLocation);
+    locationDraft.splice(index, 1);
+    if (selectedLocation === index) { selectedLocation = -1; setLocationPath(''); }
+    else if (selectedLocation > index) selectedLocation--;
+    renderLocations();
+    return;
+  }
+  if (target.dataset.location !== undefined) {
+    selectedLocation = Number(target.dataset.location);
+    setLocationPath(locationDraft[selectedLocation]);
+    $('#folder-browser').hidden = true;
+    renderLocations();
+    return;
+  }
+  if (target.dataset.folderIndex !== undefined) { await browseLocation(folderListing.directories[Number(target.dataset.folderIndex)].path); return; }
   if (target.dataset.session) { await loadSession(target.dataset.session); return; }
-  if (target.dataset.workspace !== undefined) {
-    const name = target.dataset.workspace;
-    state.collapsedWorkspaces.has(name) ? state.collapsedWorkspaces.delete(name) : state.collapsedWorkspaces.add(name);
+  if (target.dataset.workspaceToggle !== undefined) {
+    const id = target.dataset.workspaceToggle;
+    state.collapsedWorkspaces.has(id) ? state.collapsedWorkspaces.delete(id) : state.collapsedWorkspaces.add(id);
     renderLibraryTree();
+    return;
+  }
+  if (target.dataset.workspace !== undefined) {
+    await loadWorkspace(target.dataset.workspace);
     return;
   }
   if (target.dataset.resultSession) { await openResult(target.dataset.resultSession, target.dataset.resultNode, Number(target.dataset.resultPrompt)); return; }
@@ -798,6 +1046,11 @@ document.addEventListener('click', async (event) => {
   }
   if (target.hasAttribute('data-read-story')) { renderSessionStory(); return; }
   if (target.hasAttribute('data-create-summary')) { await startSessionSummary(); return; }
+  if (target.hasAttribute('data-create-workspace-summary')) { await startSessionSummary(currentSummaryTarget()); return; }
+  if (target.hasAttribute('data-view-summaries')) {
+    await openSavedSummaries({ scope: target.dataset.summaryScope, id: target.dataset.summaryTarget, title: target.dataset.summaryTitle });
+    return;
+  }
   if (target.dataset.openJobLog) { event.preventDefault(); openLogPopup(`/log.html?job=${encodeURIComponent(target.dataset.openJobLog)}`, target.dataset.openJobLog); return; }
   if (target.dataset.tab) { state.tab = target.dataset.tab; renderDetail(); return; }
   if (target.hasAttribute('data-copy-code')) {
@@ -824,7 +1077,7 @@ document.addEventListener('toggle', (event) => {
   details.dataset.loaded = 'true';
   details.querySelector('div').innerHTML = renderRecord(records.get(details.dataset.record));
 }, true);
-$('#back-to-library').addEventListener('click', showLibrary);
+$('#back-to-library').addEventListener('click', () => state.workspace ? loadWorkspace(state.workspace.id) : showLibrary());
 $('#library-button').addEventListener('click', async () => { await refreshLibrary().catch(() => {}); showLibrary(); });
 $('#global-search-button').addEventListener('click', () => { if (state.results) renderResults(); $('#global-search').focus(); $('#global-search').select(); });
 $('#global-search-form').addEventListener('submit', (event) => { event.preventDefault(); runGlobalSearch($('#global-search').value); });
@@ -877,6 +1130,7 @@ $('#tree-scroll').addEventListener('keydown', (event) => {
 document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') { event.preventDefault(); $('#global-search').focus(); $('#global-search').select(); return; }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'o') { event.preventDefault(); openAgentDialog(); return; }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); openDialog(); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); $('#search').focus(); $('#search').select(); }
 });
 document.addEventListener('change', (event) => {
@@ -884,27 +1138,99 @@ document.addEventListener('change', (event) => {
     setSortOrder(event.target.value);
   }
 });
-$('#open-button').addEventListener('click', openDialog);
-$('#open-agent-button').addEventListener('click', openAgentDialog);
+let activeTip = null;
+function hideTip() {
+  activeTip?.removeAttribute('aria-describedby');
+  activeTip = null;
+  $('#inline-tip-tooltip').hidden = true;
+}
+function showTip(button) {
+  if (!state.tips) return;
+  hideTip();
+  activeTip = button;
+  const tooltip = $('#inline-tip-tooltip');
+  tooltip.textContent = button.dataset.tip;
+  button.setAttribute('aria-describedby', 'inline-tip-tooltip');
+  positionTip();
+  requestAnimationFrame(() => { if (activeTip === button) positionTip(); });
+}
+function positionTip() {
+  if (!activeTip?.isConnected) { hideTip(); return; }
+  const tooltip = $('#inline-tip-tooltip');
+  const bounds = activeTip.getBoundingClientRect();
+  const clip = activeTip.closest('.reader-scroll')?.getBoundingClientRect();
+  tooltip.hidden = bounds.bottom < Math.max(0, clip?.top || 0) || bounds.top > Math.min(innerHeight, clip?.bottom || innerHeight);
+  if (tooltip.hidden) return;
+  tooltip.style.left = `${Math.max(8, Math.min(bounds.left, innerWidth - tooltip.offsetWidth - 8))}px`;
+  const top = bounds.bottom + tooltip.offsetHeight + 8 < innerHeight ? bounds.bottom + 8 : bounds.top - tooltip.offsetHeight - 8;
+  tooltip.style.top = `${Math.max(8, Math.min(top, innerHeight - tooltip.offsetHeight - 8))}px`;
+}
+document.addEventListener('mouseover', (event) => {
+  const button = event.target.closest('.tip-bubble');
+  if (button) showTip(button);
+  else if (activeTip !== document.activeElement) hideTip();
+});
+document.addEventListener('focusin', (event) => {
+  const button = event.target.closest('.tip-bubble');
+  if (button) showTip(button); else hideTip();
+});
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('.tip-bubble');
+  if (button) showTip(button); else hideTip();
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideTip(); });
+document.addEventListener('scroll', () => { if (activeTip === document.activeElement) positionTip(); else hideTip(); }, true);
+window.addEventListener('resize', hideTip);
+$('#tips-toggle').checked = state.tips;
+document.body.classList.toggle('tips-off', !state.tips);
+$('#tips-toggle').addEventListener('change', () => {
+  state.tips = $('#tips-toggle').checked;
+  localStorage.setItem('chronicle-tips', state.tips ? 'on' : 'off');
+  document.body.classList.toggle('tips-off', !state.tips);
+  hideTip();
+});
+$('#scan-status').addEventListener('click', () => $('#scan-dialog').showModal());
+$('#scan-button').addEventListener('click', async () => {
+  state.scan = { ...state.scan, running: true, errors: [] };
+  renderScanStatus();
+  try {
+    const result = await api('/api/scan', { method: 'POST' });
+    state.scan = { ...result.scan, running: true };
+    await refreshLibrary();
+  } catch (error) {
+    state.scan.running = false;
+    renderScanStatus(error.message);
+    toast(`Could not scan for updates: ${error.message}`);
+  }
+});
+$('#open-button').addEventListener('click', () => openDialog());
 $('#reset-vscode-default').addEventListener('click', () => {
-  if (state.defaultPaths.vscodeStorage) $('#path-input').value = state.defaultPaths.vscodeStorage;
+  if (state.defaultPaths.vscodeStorage) setLocationPath(state.defaultPaths.vscodeStorage);
   $('#path-input').focus();
 });
 $('#reset-agent-default').addEventListener('click', () => {
-  if (state.defaultPaths.agentSessions) $('#agent-path-input').value = state.defaultPaths.agentSessions;
-  $('#agent-path-input').focus();
+  if (state.defaultPaths.agentSessions) setLocationPath(state.defaultPaths.agentSessions);
+  $('#path-input').focus();
 });
-$('#config-button').addEventListener('click', () => { pendingSummarySessionId = null; openConfigDialog(); });
+$('#config-button').addEventListener('click', () => { pendingSummaryTarget = null; openConfigDialog(); });
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
-$('#home-button').addEventListener('click', () => state.session && renderOverview());
-$('#story-button').addEventListener('click', renderSessionStory);
-$('#models-button').addEventListener('click', () => state.session && renderOverview(true));
+$('#home-button').addEventListener('click', () => state.view === 'workspace' ? loadWorkspace(state.workspace.id) : state.mode === 'session' && renderOverview());
+$('#story-button').addEventListener('click', () => state.mode === 'session' && renderSessionStory());
+$('#models-button').addEventListener('click', () => {
+  if (state.view === 'workspace') { $('.workspace-page .credit-card')?.scrollIntoView({ block: 'start' }); return; }
+  if (state.mode === 'session') renderOverview(true);
+});
 $('#collapse-button').addEventListener('click', () => { state.expanded.clear(); renderTree(); });
 $('#expand-button').addEventListener('click', () => { state.session?.requests.forEach((request) => state.expanded.add(request.id)); renderTree(); });
 $('#previous-button').addEventListener('click', () => moveSelection(-1));
 $('#next-button').addEventListener('click', () => moveSelection(1));
 $('#export-button').addEventListener('click', () => {
-  if (!state.session) { toast('Open a session first'); return; }
+  if (state.view === 'workspace') {
+    const link = document.createElement('a');
+    link.href = `/api/workspaces/${state.workspace.id}/export`; link.download = `workspace-${state.workspace.id}-usage.md`; link.click();
+    return;
+  }
+  if (state.mode !== 'session' || !state.session) { toast('Open a session or workspace first'); return; }
   const link = document.createElement('a');
   link.href = `/api/sessions/${state.session.id}/export`; link.download = `chat-${state.session.id}.json`; link.click();
 });
@@ -915,25 +1241,56 @@ $('#open-form').addEventListener('submit', async (event) => {
   $('#import-submit').disabled = true;
   $('#import-submit').textContent = 'Scanning folder...';
   try {
-    const result = await api('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: $('#path-input').value }) });
-    $('#open-dialog').close();
-    await loadLibrary(result.sessions.length === 1 ? result.sessions[0] : undefined);
-    toast(`Found ${number(result.found)} session ${result.found === 1 ? 'file' : 'files'}${result.indexing ? ` · indexing ${number(result.indexing)} for search` : ''}. Sources unchanged.`);
+    const result = await api('/api/locations', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: locationDraft }) });
+    state.locations = result.locations;
+    await loadLibrary();
+    if (result.errors.length) {
+      $('#import-error').textContent = `Locations saved, but some could not be scanned:\n${result.errors.join('\n')}`;
+    } else {
+      $('#open-dialog').close();
+      toast(`Saved ${result.locations.length} scan locations · ${result.sessions.length} sessions.`);
+    }
   } catch (error) { $('#import-error').textContent = error.message; }
-  finally { $('#import-submit').disabled = false; $('#import-submit').innerHTML = `Explore session ${icon('arrow-up-right')}`; refreshIcons($('#open-dialog')); }
+  finally { $('#import-submit').disabled = false; $('#import-submit').textContent = 'Save and scan'; }
 });
-$('#open-agent-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  $('#agent-import-error').textContent = '';
-  $('#agent-import-submit').disabled = true;
-  $('#agent-import-submit').textContent = 'Scanning agent sessions...';
+$('#path-input').addEventListener('input', resetLocationCheck);
+$('#check-location').addEventListener('click', async () => {
+  const sequence = ++locationSequence;
+  const input = $('#path-input').value.trim();
+  $('#import-error').textContent = '';
+  checkedLocation = null;
+  $('#add-location').disabled = true;
+  $('#check-location').disabled = true;
+  $('#location-check-result').textContent = 'Checking...';
   try {
-    const result = await api('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: $('#agent-path-input').value }) });
-    $('#open-agent-dialog').close();
-    await loadLibrary(result.sessions.length === 1 ? result.sessions[0] : undefined);
-    toast(`Found ${number(result.found)} agent session ${result.found === 1 ? 'file' : 'files'}${result.indexing ? ` · indexing ${number(result.indexing)} for search` : ''}. Sources unchanged.`);
-  } catch (error) { $('#agent-import-error').textContent = error.message; }
-  finally { $('#agent-import-submit').disabled = false; $('#agent-import-submit').innerHTML = `Explore agent sessions ${icon('arrow-up-right')}`; refreshIcons($('#open-agent-dialog')); }
+    const result = await api('/api/locations/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: input }) });
+    if (sequence !== locationSequence) return;
+    checkedLocation = result.path;
+    $('#path-input').value = result.path;
+    $('#location-check-result').textContent = `${result.found} session files found${result.found ? '' : ' (empty location)'}.`;
+    $('#add-location').disabled = false;
+  } catch (error) { if (sequence === locationSequence) { $('#location-check-result').textContent = ''; $('#import-error').textContent = error.message; } }
+  finally { $('#check-location').disabled = false; }
+});
+$('#add-location').addEventListener('click', () => {
+  if (!checkedLocation) return;
+  const duplicate = locationDraft.findIndex((input) => input.toLowerCase() === checkedLocation.toLowerCase());
+  if (duplicate >= 0 && duplicate !== selectedLocation) { $('#import-error').textContent = 'This location is already listed.'; return; }
+  if (selectedLocation < 0) { locationDraft.push(checkedLocation); selectedLocation = locationDraft.length - 1; }
+  else locationDraft[selectedLocation] = checkedLocation;
+  $('#import-error').textContent = '';
+  resetLocationCheck();
+  renderLocations();
+});
+$('#new-location').addEventListener('click', () => { selectedLocation = -1; setLocationPath(''); renderLocations(); $('#path-input').focus(); });
+$('#folder-parent').addEventListener('click', () => folderListing && browseLocation(folderListing.parent));
+$('#folder-drive').addEventListener('change', () => browseLocation($('#folder-drive').value));
+$('#browse-folder').addEventListener('click', async () => {
+  if (!window.chronicleDesktop) { await browseLocation(); return; }
+  try {
+    const chosen = await window.chronicleDesktop.pick('folder', $('#path-input').value.trim());
+    if (chosen) setLocationPath(chosen);
+  } catch (error) { $('#import-error').textContent = error.message; }
 });
 const resizeHandle = $('#resize-handle');
 function resizeSidebar(width) { document.documentElement.style.setProperty('--sidebar', `${Math.max(250, Math.min(650, width))}px`); }
@@ -951,20 +1308,12 @@ resizeHandle.addEventListener('keydown', (event) => {
 if (window.chronicleDesktop) {
   document.body.classList.add('desktop');
   window.chronicleDesktop.onOpen((source) => source === 'agent' ? openAgentDialog() : openDialog());
-  for (const [id, kind] of [['#browse-folder', 'folder'], ['#browse-file', 'file']]) {
+  for (const [id, kind] of [['#browse-file', 'file']]) {
     $(id).addEventListener('click', async () => {
-      const chosen = await window.chronicleDesktop.pick(kind);
-      if (!chosen) return;
-      $('#path-input').value = chosen;
-      $('#open-form').requestSubmit();
-    });
-  }
-  for (const [id, kind] of [['#browse-agent-folder', 'agent-folder'], ['#browse-agent-file', 'agent-file']]) {
-    $(id).addEventListener('click', async () => {
-      const chosen = await window.chronicleDesktop.pick(kind);
-      if (!chosen) return;
-      $('#agent-path-input').value = chosen;
-      $('#open-agent-form').requestSubmit();
+      try {
+        const chosen = await window.chronicleDesktop.pick(kind, $('#path-input').value.trim());
+        if (chosen) setLocationPath(chosen);
+      } catch (error) { $('#import-error').textContent = error.message; }
     });
   }
   $('#browse-output-dir').addEventListener('click', async () => {
@@ -979,6 +1328,158 @@ function sessionSummaryLinkHtml(sessionId) {
   return `<a href="/log.html?job=${encodeURIComponent(job.id)}" class="log-link inline-log-link" data-open-job-log="${escapeHtml(job.id)}" title="Open operation log in popup window">${icon('scroll-text')} ${job.status === 'failed' ? 'Summary failed · View log' : job.status === 'completed' ? 'Summary log' : 'Summarizing · View log'}</a>`;
 }
 
+function savedSummaryButtonHtml(scope, id, title) {
+  return `<button class="button" data-view-summaries data-summary-scope="${scope}" data-summary-target="${escapeHtml(id)}" data-summary-title="${escapeHtml(title)}" hidden>${icon('book-open')} <span>View summaries</span></button>`;
+}
+
+async function refreshSavedSummaryButtons() {
+  for (const button of document.querySelectorAll('[data-view-summaries]')) {
+    try {
+      const summaries = await api(`/api/${button.dataset.summaryScope === 'workspace' ? 'workspaces' : 'sessions'}/${encodeURIComponent(button.dataset.summaryTarget)}/summaries`);
+      if (!button.isConnected) continue;
+      button.hidden = !summaries.length;
+      button.querySelector('span').textContent = `View summaries (${summaries.length})`;
+    } catch (error) {
+      if (!button.isConnected) continue;
+      button.hidden = false;
+      button.querySelector('span').textContent = 'Saved summaries unavailable (retry)';
+      button.title = error.message;
+    }
+  }
+}
+
+function setSummaryViewerLoading() {
+  state.savedSummary = null;
+  $('#saved-summary-error').hidden = true;
+  $('#saved-summary-feedback').textContent = '';
+  $('#saved-summary-content').textContent = 'Loading summary...';
+  for (const button of document.querySelectorAll('[data-summary-viewer-action]')) button.disabled = true;
+}
+
+async function displaySavedSummary(id) {
+  const sequence = ++summaryViewSequence;
+  setSummaryViewerLoading();
+  try {
+    const summary = await api(`/api/summary/saved/${encodeURIComponent(id)}`);
+    if (sequence !== summaryViewSequence) return;
+    state.savedSummary = summary;
+    $('#saved-summary-filename').textContent = summary.fileName;
+    $('#saved-summary-filename').title = summary.fileName;
+    $('#saved-summary-version').title = summary.fileName;
+    $('#saved-summary-content').innerHTML = markdown(summary.markdown);
+    $('#saved-summary-content').scrollTop = 0;
+    refreshIcons($('#saved-summary-content'));
+    for (const button of document.querySelectorAll('[data-summary-viewer-action]')) button.disabled = false;
+  } catch (error) {
+    if (sequence !== summaryViewSequence) return;
+    $('#saved-summary-content').textContent = '';
+    $('#saved-summary-error').textContent = error.message;
+    $('#saved-summary-error').hidden = false;
+  }
+}
+
+async function openSavedSummaries(target, selectedId) {
+  const sequence = ++summaryViewSequence;
+  setSummaryViewerLoading();
+  const title = `${target.scope === 'workspace' ? 'Workspace' : 'Session'} summary: ${target.title}`;
+  $('#saved-summary-title').textContent = title;
+  $('#saved-summary-title').title = title;
+  $('#saved-summary-filename').textContent = '';
+  $('#saved-summary-filename').title = '';
+  const select = $('#saved-summary-version');
+  select.replaceChildren();
+  select.title = '';
+  select.disabled = true;
+  if (!$('#saved-summary-dialog').open) $('#saved-summary-dialog').showModal();
+  try {
+    const summaries = await api(`/api/${target.scope === 'workspace' ? 'workspaces' : 'sessions'}/${encodeURIComponent(target.id)}/summaries`);
+    if (sequence !== summaryViewSequence) return;
+    if (!summaries.length) {
+      $('#saved-summary-content').textContent = 'No saved summaries for this selection yet.';
+      return;
+    }
+    for (const [index, summary] of summaries.entries()) {
+      const option = new Option(`${date(summary.generatedAt, { year: 'numeric', second: '2-digit' })} (version ${summaries.length - index})`, summary.id);
+      option.title = summary.fileName;
+      select.add(option);
+    }
+    select.disabled = false;
+    select.value = summaries.some((summary) => summary.id === selectedId) ? selectedId : summaries[0].id;
+    await displaySavedSummary(select.value);
+  } catch (error) {
+    if (sequence !== summaryViewSequence) return;
+    $('#saved-summary-content').textContent = '';
+    $('#saved-summary-error').textContent = error.message;
+    $('#saved-summary-error').hidden = false;
+  }
+}
+
+$('#saved-summary-version').addEventListener('change', (event) => displaySavedSummary(event.target.value));
+$('#saved-summary-dialog').addEventListener('close', () => {
+  summaryViewSequence++;
+  state.savedSummary = null;
+  clearSummaryPrint();
+});
+$('#saved-summary-copy').addEventListener('click', async () => {
+  if (!state.savedSummary) return;
+  try {
+    await copyText(state.savedSummary.markdown);
+    $('#saved-summary-error').hidden = true;
+    $('#saved-summary-feedback').textContent = 'Summary Markdown copied to clipboard.';
+  }
+  catch (error) { $('#saved-summary-error').textContent = `Could not copy summary: ${error.message}`; $('#saved-summary-error').hidden = false; }
+});
+$('#saved-summary-save').addEventListener('click', async () => {
+  const summary = state.savedSummary;
+  if (!summary) return;
+  try {
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: summary.fileName,
+        types: [{ description: 'Markdown summary', accept: { 'text/markdown': ['.md'] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(summary.markdown);
+      await writable.close();
+      $('#saved-summary-feedback').textContent = 'Summary saved.';
+    } else {
+      const link = document.createElement('a');
+      link.href = `/api/summary/saved/${encodeURIComponent(summary.id)}/download`;
+      link.download = summary.fileName;
+      link.click();
+      $('#saved-summary-feedback').textContent = 'Summary download started.';
+    }
+    $('#saved-summary-error').hidden = true;
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    $('#saved-summary-error').textContent = `Could not save summary: ${error.message}`;
+    $('#saved-summary-error').hidden = false;
+  }
+});
+$('#saved-summary-print').addEventListener('click', () => {
+  if (!state.savedSummary) return;
+  prepareSummaryPrint();
+  window.print();
+});
+function prepareSummaryPrint() {
+  if (!$('#saved-summary-dialog').open || !state.savedSummary) return;
+  // A normal-flow copy paginates without the dialog's top-layer clipping.
+  $('#summary-print-document').innerHTML = $('#saved-summary-content').innerHTML;
+  document.body.classList.add('printing-summary');
+}
+function clearSummaryPrint() {
+  document.body.classList.remove('printing-summary');
+  $('#summary-print-document').replaceChildren();
+}
+window.addEventListener('beforeprint', prepareSummaryPrint);
+window.addEventListener('afterprint', clearSummaryPrint);
+$('#summary-view-button').addEventListener('click', () => {
+  const job = state.activeSummaryJob;
+  if (!job?.savedSummaryId) return;
+  $('#summary-progress-dialog').close();
+  openSavedSummaries({ scope: job.scope, id: job.sessionId, title: job.sessionTitle }, job.savedSummaryId);
+});
+
 async function copyText(text) {
   if (navigator.clipboard?.writeText) {
     try { await navigator.clipboard.writeText(text); return; }
@@ -989,7 +1490,8 @@ async function copyText(text) {
   area.setAttribute('readonly', '');
   area.style.position = 'fixed';
   area.style.opacity = '0';
-  document.body.append(area);
+  const container = document.activeElement?.closest('dialog[open]') || document.querySelector('dialog[open]') || document.body;
+  container.append(area);
   area.select();
   const ok = document.execCommand('copy');
   area.remove();
@@ -1072,7 +1574,7 @@ $('#config-form').addEventListener('submit', async (event) => {
     $('#cfg-env-path').innerHTML = `${icon('file-lock-2')} <span>Saved to <code>.env</code></span>`;
     $('#cfg-env-path').title = cfg.envPath || '.env';
     setConfigFeedback('success', 'Configuration saved to local .env file. Run Test connection to verify connectivity.');
-    if (pendingSummarySessionId && state.session?.id === pendingSummarySessionId) {
+    if (pendingSummaryTarget) {
       $('#continue-summary-button').hidden = false;
     }
     toast('Summary configuration saved to .env');
@@ -1105,7 +1607,7 @@ $('#test-config-button').addEventListener('click', async () => {
     if (result.ok) {
       await loadSummaryConfig().catch(() => {});
       setConfigFeedback('success', `Connectivity verified! Entra auth ${result.authMs} ms · Foundry agent ${result.agentMs} ms · Reply: "${result.replyPreview}"`);
-      if (pendingSummarySessionId && state.session?.id === pendingSummarySessionId && state.summaryConfig?.configured) {
+      if (pendingSummaryTarget && state.summaryConfig?.configured) {
         $('#continue-summary-button').hidden = false;
       }
     } else {
@@ -1122,8 +1624,9 @@ $('#test-config-button').addEventListener('click', async () => {
 
 $('#continue-summary-button').addEventListener('click', async () => {
   $('#config-dialog').close();
-  pendingSummarySessionId = null;
-  await startSessionSummary();
+  const target = pendingSummaryTarget;
+  pendingSummaryTarget = null;
+  await startSessionSummary(target);
 });
 
 function formatPlainLogs(job) {
@@ -1209,16 +1712,18 @@ $('#summary-copy-button').addEventListener('click', async () => {
 
 function renderSummaryJobDialog(job) {
   state.activeSummaryJob = job;
-  state.sessionSummaries.set(job.sessionId, job);
+  state.sessionSummaries.set(job.scope === 'workspace' ? `workspace:${job.sessionId}` : job.sessionId, job);
   const elapsed = (((job.completedAt || Date.now()) - job.startedAt) / 1000).toFixed(1);
   $('#summary-progress-elapsed').textContent = `${elapsed} s`;
   $('#summary-progress-fill').style.width = `${Math.max(5, Math.min(100, job.progress || 0))}%`;
   $('#summary-log-link').href = `/log.html?job=${encodeURIComponent(job.id)}`;
   $('#summary-log-link').dataset.jobId = job.id;
+  $('#summary-view-button').hidden = job.status !== 'completed' || !job.savedSummaryId;
 
   if (job.stats) {
     $('#summary-progress-stats').hidden = false;
     $('#summary-progress-stats').innerHTML = [
+      ...(job.stats.sessions ? [`${number(job.stats.sessions)} sessions`] : []),
       `${number(job.stats.prompts)} prompts`,
       `${number(job.stats.tools)} tool calls`,
       `${number(job.stats.reasoning)} reasoning`,
@@ -1231,7 +1736,7 @@ function renderSummaryJobDialog(job) {
   }
 
   if (job.status === 'running') {
-    $('#summary-dialog-title').textContent = 'Creating session summary...';
+    $('#summary-dialog-title').textContent = `Creating ${job.scope === 'workspace' ? 'workspace' : 'session'} summary...`;
     $('#summary-dialog-subtitle').textContent = `Generating ${job.fileName} via Microsoft Foundry Agent.`;
     $('#summary-progress-status').innerHTML = `<span class="spinner inline-spinner"></span> ${escapeHtml(job.message || 'Working...')}`;
     $('#summary-progress-error').hidden = true;
@@ -1239,8 +1744,8 @@ function renderSummaryJobDialog(job) {
     $('#summary-copy-button').hidden = true;
     $('#summary-download-link').hidden = true;
   } else if (job.status === 'completed') {
-    $('#summary-dialog-title').textContent = 'Session summary created.';
-    $('#summary-dialog-subtitle').textContent = `${job.fileName} is ready for cross-machine agent handoff.`;
+    $('#summary-dialog-title').textContent = `${job.scope === 'workspace' ? 'Workspace' : 'Session'} summary created.`;
+    $('#summary-dialog-subtitle').textContent = job.fileName;
     $('#summary-progress-status').innerHTML = `${icon('circle-check')} Summary completed${job.warningCount ? ` with ${number(job.warningCount)} warning(s)` : ''}.`;
     $('#summary-progress-error').hidden = true;
     $('#summary-saved-path').hidden = false;
@@ -1251,6 +1756,9 @@ function renderSummaryJobDialog(job) {
     $('#summary-copy-button').hidden = !job.markdown;
     if (state.mode === 'session' && state.session?.id === job.sessionId && state.selected === state.session.overview.id && !$('#models-button').classList.contains('active')) {
       renderOverview(false);
+    }
+    if (job.status !== 'running' && job.scope === 'workspace' && state.view === 'workspace' && state.workspace?.id === job.sessionId) {
+      loadWorkspace(job.sessionId, false);
     }
   } else if (job.status === 'failed') {
     $('#summary-dialog-title').textContent = 'Summary generation failed.';
@@ -1284,14 +1792,19 @@ async function pollSummaryJob(jobId) {
   }
 }
 
-async function startSessionSummary() {
-  if (!state.session) { toast('Open a session first'); return; }
+function currentSummaryTarget() {
+  if (state.view === 'workspace') return { scope: 'workspace', id: state.workspace.id, title: state.workspace.title };
+  if (state.mode === 'session' && state.session) return { scope: 'session', id: state.session.id, title: state.session.title };
+  return null;
+}
+async function startSessionSummary(target = currentSummaryTarget()) {
+  if (!target) { toast('Select a session or workspace first'); return; }
   let cfg;
   try { cfg = await loadSummaryConfig(); }
   catch (error) { toast(error.message); return; }
 
   if (!cfg.configured) {
-    pendingSummarySessionId = state.session.id;
+    pendingSummaryTarget = target;
     await openConfigDialog({ requiredForSummary: true });
     return;
   }
@@ -1303,14 +1816,15 @@ async function startSessionSummary() {
   $('#summary-download-link').hidden = true;
   $('#summary-progress-stats').hidden = true;
   $('#summary-progress-fill').style.width = '5%';
-  $('#summary-dialog-title').textContent = 'Creating session summary...';
-  $('#summary-dialog-subtitle').textContent = `Starting summarization for “${state.session.title}”...`;
+  $('#summary-dialog-title').textContent = `Creating ${target.scope} summary...`;
+  $('#summary-view-button').hidden = true;
+  $('#summary-dialog-subtitle').textContent = `Starting summarization for “${target.title}”...`;
   $('#summary-progress-status').innerHTML = '<span class="spinner inline-spinner"></span> Preparing session digest...';
   $('#summary-progress-elapsed').textContent = '0.0 s';
   if (!$('#summary-progress-dialog').open) $('#summary-progress-dialog').showModal();
 
   try {
-    const job = await api(`/api/sessions/${encodeURIComponent(state.session.id)}/summarize`, { method: 'POST' });
+    const job = await api(`/api/${target.scope === 'workspace' ? 'workspaces' : 'sessions'}/${encodeURIComponent(target.id)}/summarize`, { method: 'POST' });
     renderSummaryJobDialog(job);
     summaryPollTimer = setTimeout(() => pollSummaryJob(job.id), 300);
   } catch (error) {

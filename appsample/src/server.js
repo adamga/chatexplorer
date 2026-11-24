@@ -4,9 +4,11 @@ import path from 'node:path';
 import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readFile, writeFile, rename, readdir, stat } from 'node:fs/promises';
-import { summarizeSession, summarizeNode, detailNodeAsync, storyPage } from './parser.js';
+import { summarizeSession, summarizeNode, detailNodeAsync, storyPage, discover } from './parser.js';
 import { createLibrary } from './library.js';
 import { createSummaryService } from './summarizer.js';
+import { sessionUsageReport, usageReportMarkdown } from './usage.js';
+import { workspaceReport } from './workspaces.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const publicDir = path.join(projectRoot, 'public');
@@ -166,19 +168,27 @@ export async function startServer({ port = 3210, dataDir, envDir, loadSamples = 
   const imports = new Set();
   const startupWarnings = [];
   let saveQueue = Promise.resolve();
+  let locationQueue = Promise.resolve();
+  let scan = { running: false, startedAt: null, completedAt: null, errors: [], added: 0, removed: 0, reindexed: 0 };
+  function changeLocations(operation) {
+    const result = locationQueue.catch(() => {}).then(operation);
+    locationQueue = result;
+    return result;
+  }
 
   const library = createLibrary({ cacheDir: path.join(dataDir || path.join(projectRoot, '.chat-explorer-cache'), dataDir ? 'index-cache' : '') });
   const summaryService = createSummaryService({
     baseDir: envDir || dataDir || projectRoot,
     getSession: (id) => library.getSession(id),
+    getWorkspace: (id) => library.getWorkspace(id),
     fetchImpl,
     maxChunkChars
   });
 
   async function importPath(input, persist = true) {
-    const result = await library.addPath(input);
+    const result = await library.addPath(input, { allowEmpty: true });
+    imports.add(path.resolve(input));
     if (persist) {
-      imports.add(path.resolve(input));
       const content = JSON.stringify({ paths: [...imports] }, null, 2);
       const save = saveQueue.catch(() => {}).then(async () => {
         const temporary = `${configFile}.${process.pid}.tmp`;
@@ -191,15 +201,17 @@ export async function startServer({ port = 3210, dataDir, envDir, loadSamples = 
     return result;
   }
 
+  let savedLocations = false;
   try {
     const config = JSON.parse(await readFile(configFile, 'utf8'));
+    savedLocations = Array.isArray(config.paths);
     for (const input of config.paths || []) {
       imports.add(input);
       try { await importPath(input, false); } catch (error) { startupWarnings.push(`${input}: ${error.message}`); }
     }
   } catch (error) { if (error.code !== 'ENOENT') startupWarnings.push(`Saved library: ${error.message}`); }
 
-  if (!library.size && loadSamples) {
+  if (!library.size && loadSamples && !savedLocations) {
     try {
       const samples = await readdir(path.join(projectRoot, 'chatsessions'), { withFileTypes: true });
       for (const entry of samples.filter((value) => value.isDirectory())) {
@@ -233,7 +245,86 @@ export async function startServer({ port = 3210, dataDir, envDir, loadSamples = 
 
       if (pathname.startsWith('/api/')) {
         if (method === 'GET' && pathname === '/api/sessions') {
-          sendJson(res, 200, { ...library.list(), warnings: startupWarnings, defaultPaths: defaultDevicePaths() });
+          sendJson(res, 200, { ...library.list(), warnings: startupWarnings, defaultPaths: defaultDevicePaths(), locations: [...imports], scan });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/scan') {
+          if (!scan.running) {
+            scan = { running: true, startedAt: new Date().toISOString(), completedAt: null, errors: [], added: 0, removed: 0, reindexed: 0 };
+            const active = scan;
+            changeLocations(async () => {
+              const before = new Set(library.list().sessions.map((session) => session.id));
+              for (const input of imports) {
+                try {
+                  const result = await library.addPath(input, { allowEmpty: true, retryErrors: true });
+                  active.reindexed += result.indexing;
+                } catch (error) { active.errors.push(`${input}: ${error.message}. Previously indexed data for this location was retained.`); }
+              }
+              library.retainPaths([...imports]);
+              await library.idle();
+              const after = library.list().sessions;
+              active.added = after.filter((session) => !before.has(session.id)).length;
+              const ids = new Set(after.map((session) => session.id));
+              active.removed = [...before].filter((id) => !ids.has(id)).length;
+              active.errors.push(...after.filter((session) => session.status === 'error').map((session) => `${session.title}: ${session.error}`));
+            }).catch((error) => { active.errors.push(`Scan failed: ${error.message}`); })
+              .finally(() => { active.running = false; active.completedAt = new Date().toISOString(); });
+          }
+          sendJson(res, 202, { scan });
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/folders') {
+          const input = searchParams.get('path') || os.homedir();
+          const directory = path.resolve(input);
+          const info = await stat(directory);
+          if (!info.isDirectory()) { sendJson(res, 400, { error: 'Select a directory to browse.' }); return; }
+          const children = await readdir(directory, { withFileTypes: true });
+          const directories = children.filter((entry) => entry.isDirectory()).map((entry) => ({
+            name: entry.name, path: path.join(directory, entry.name)
+          })).sort((a, b) => a.name.localeCompare(b.name));
+          const drives = process.platform === 'win32' ? (await Promise.all('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async (letter) => {
+            const drive = `${letter}:\\`;
+            try { return (await stat(drive)).isDirectory() ? drive : null; }
+            catch (error) { if (['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'UNKNOWN'].includes(error.code)) return null; throw error; }
+          }))).filter(Boolean) : ['/'];
+          sendJson(res, 200, { path: directory, parent: path.dirname(directory), directories, drives });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/locations/check') {
+          const body = await readJsonBody(req);
+          if (typeof body?.path !== 'string' || !body.path.trim()) {
+            sendJson(res, 400, { error: 'A local path is required.' }); return;
+          }
+          const input = path.resolve(body.path.trim());
+          const files = await discover(input, { allowEmpty: true });
+          sendJson(res, 200, { path: input, found: files.length });
+          return;
+        }
+        if (method === 'PUT' && pathname === '/api/locations') {
+          const body = await readJsonBody(req);
+          if (!Array.isArray(body?.paths) || body.paths.length > 100 ||
+            body.paths.some((input) => typeof input !== 'string' || !input.trim())) {
+            sendJson(res, 400, { error: 'Provide up to 100 non-empty local paths.' }); return;
+          }
+          await changeLocations(async () => {
+            const next = [...new Set(body.paths.map((input) => path.resolve(input.trim())))];
+            const save = saveQueue.catch(() => {}).then(async () => {
+              const temporary = `${configFile}.${process.pid}.tmp`;
+              await writeFile(temporary, JSON.stringify({ paths: next }, null, 2), { mode: 0o600 });
+              await rename(temporary, configFile);
+            });
+            saveQueue = save;
+            await save;
+            imports.clear();
+            for (const input of next) imports.add(input);
+            const errors = [];
+            for (const input of next) {
+              try { await library.addPath(input, { allowEmpty: true }); }
+              catch (error) { errors.push(`${input}: ${error.message}`); }
+            }
+            library.retainPaths(next);
+            sendJson(res, 200, { locations: [...imports], errors, ...library.list() });
+          });
           return;
         }
         if (method === 'POST' && pathname === '/api/import') {
@@ -242,7 +333,7 @@ export async function startServer({ port = 3210, dataDir, envDir, loadSamples = 
             sendJson(res, 400, { error: 'A local path is required.' });
             return;
           }
-          sendJson(res, 200, await importPath(body.path.trim()));
+          sendJson(res, 200, await changeLocations(() => importPath(body.path.trim())));
           return;
         }
         if (method === 'GET' && pathname === '/api/search') {
@@ -267,6 +358,35 @@ export async function startServer({ port = 3210, dataDir, envDir, loadSamples = 
         }
 
         let match;
+        if (method === 'GET' && (match = /^\/api\/(workspaces|sessions)\/([^/]+)\/summaries$/.exec(pathname))) {
+          sendJson(res, 200, await summaryService.listSavedSummaries(decodeSegment(match[2]), {
+            scope: match[1] === 'workspaces' ? 'workspace' : 'session'
+          }));
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/summary\/saved\/([^/]+)(?:\/(download))?$/.exec(pathname))) {
+          const summary = await summaryService.getSavedSummary(decodeSegment(match[1]));
+          if (match[2]) {
+            sendText(res, 200, summary.markdown, 'text/markdown; charset=utf-8', {
+              'Content-Disposition': contentDispositionAttachment(summary.fileName)
+            });
+          } else sendJson(res, 200, summary);
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/workspaces\/([^/]+)(?:\/(export|usage))?$/.exec(pathname))) {
+          const workspace = library.getWorkspace(decodeSegment(match[1]));
+          if (match[2] === 'export') {
+            sendText(res, 200, workspaceReport(workspace), 'text/markdown; charset=utf-8', {
+              'Content-Disposition': contentDispositionAttachment(`workspace-${workspace.id}-usage.md`)
+            });
+          } else sendJson(res, 200, workspace);
+          return;
+        }
+        if (method === 'POST' && (match = /^\/api\/workspaces\/([^/]+)\/summarize$/.exec(pathname))) {
+          await readJsonBody(req);
+          sendJson(res, 202, await summaryService.startSummaryJob(decodeSegment(match[1]), { scope: 'workspace' }));
+          return;
+        }
         if (method === 'GET' && (match = /^\/api\/summary\/jobs\/([^/]+)$/.exec(pathname))) {
           const job = summaryService.getJob(decodeSegment(match[1]), { includeMarkdown: searchParams.get('markdown') === '1' });
           if (!job) { sendJson(res, 404, { error: 'Summary operation not found.' }); return; }
@@ -320,6 +440,15 @@ export async function startServer({ port = 3210, dataDir, envDir, loadSamples = 
           sendJson(res, 200, session.raw, {
             'Content-Disposition': contentDispositionAttachment(`chat-${session.id}.json`)
           });
+          return;
+        }
+        if (method === 'GET' && (match = /^\/api\/sessions\/([^/]+)\/usage(?:\/(export))?$/.exec(pathname))) {
+          const session = await library.getSession(decodeSegment(match[1]));
+          if (match[2]) {
+            sendText(res, 200, usageReportMarkdown(session), 'text/markdown; charset=utf-8', {
+              'Content-Disposition': contentDispositionAttachment(`chat-${session.id}-ai-credits.md`)
+            });
+          } else sendJson(res, 200, sessionUsageReport(session));
           return;
         }
         if (method === 'POST' && (match = /^\/api\/sessions\/([^/]+)\/summarize$/.exec(pathname))) {
