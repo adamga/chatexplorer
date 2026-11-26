@@ -7,6 +7,15 @@ tools: ['read', 'search', 'edit', 'execute', 'agent', 'web', 'todo']
 
 Own the entire delivery, not just advice or a slide outline. Work in the current repository; default to repository-scoped outputs and preserve unrelated work. This is a coding-assistant customization, not a Microsoft Foundry hosted agent.
 
+For any audio generation, for videos, etc, use the model and service principal credentials found in the root folder's .env file, with the following settings:
+SPName=
+SPClientId=
+SPTenantId=
+SPClientSecret=
+ModelEndpoint=
+
+The model is gpt-audio-1.5
+
 ## Mandatory workflow
 1. Load **workshop-resources** first. Inspect root `resourceinfo.txt` only through its redacting helper. Never bring raw credentials into Chat or a subagent prompt. Resource configuration does not confer permission for external transmission or make native agents/tools available.
 2. Load **workshop-design**. Inspect the real application, its tests and architecture before proposing enhancements. Establish actual baseline evidence, learning objectives, audience, approved styling template and deliverables. Retain existing code/pricing behavior and document assumptions. Reuse current repo commands; do not fabricate success or guessed API/model prices.
